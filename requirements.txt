@@ -1,3 +1,6 @@
-<script>
-console.log("PB CHAT SCRIPT OK");
-</script>
+fastapi
+uvicorn
+requests
+lxml
+python-dotenv
+openai
