@@ -238,7 +238,7 @@ def widget():
 
   const btn = document.createElement("button");
   btn.innerText = "PembeGPT";
-  btn.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer;color:red";
+  btn.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer";
   document.body.appendChild(btn);
 
   const box = document.createElement("div");
@@ -309,4 +309,5 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
