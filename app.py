@@ -96,6 +96,11 @@ def reindex_post():
     fetch_and_index_feed()
     return {"ok": True, "count": len(load_products())}
 
+@app.post("/pb-chat/reindex")
+def reindex_post():
+    fetch_and_index_feed()
+    return {"ok": True, "count": len(load_products())}
+
 def simple_search(products, q, k=6):
     nq = norm(q)
     if not nq:
@@ -215,4 +220,5 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
