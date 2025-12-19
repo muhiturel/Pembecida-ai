@@ -310,4 +310,23 @@ def widget():
 
     return Response(js, media_type="application/javascript")
 
+# -------------------------
+# Son eklendi
+# -------------------------
+
+@app.get("/pb-chat/debug/fields")
+def debug_fields(limit: int = 5):
+    products = load_products()[:limit]
+    out = []
+    for p in products:
+        out.append({
+            "id": p.get("id"),
+            "title": p.get("title"),
+            "brand": p.get("brand"),
+            "brand_title": p.get("brand_title"),
+            "product_type": p.get("product_type"),
+            "link": p.get("link"),
+        })
+    return {"count": len(load_products()), "rows": out}
+
 
