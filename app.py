@@ -91,6 +91,11 @@ def reindex_get():
     fetch_and_index_feed()
     return {"ok": True, "count": len(load_products())}
 
+@app.get("/pb-chat/reindex")
+def reindex_get():
+    fetch_and_index_feed()
+    return {"ok": True, "count": len(load_products())}
+
 @app.post("/pb-chat/reindex")
 def reindex_post():
     fetch_and_index_feed()
@@ -220,5 +225,6 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
