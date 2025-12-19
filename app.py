@@ -230,19 +230,12 @@ def widget():
 @app.get("/pb-chat/debug/sample")
 def debug_sample(limit: int = 10):
     products = load_products()
-    return {
-        "count": len(products),
-        "sample": products[:limit]
-    }
+    return {"count": len(products), "sample": products[:limit]}
 
 @app.get("/pb-chat/debug/search")
 def debug_search(q: str, k: int = 10):
     products = load_products()
     hits = simple_search(products, q, k=k)
-    return {
-        "query": q,
-        "hits": hits
-    }
-
+    return {"query": q, "hits": hits}
 
 
