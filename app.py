@@ -110,15 +110,52 @@ def simple_search(products, q, k=6):
     nq = norm(q)
     if not nq:
         return []
+
+    # temel eş anlam/niyet sözlüğü (TR/EN)
+    intent_map = {
+        "kalem_kutusu": ["kalem", "kalemkutusu", "kalem kutusu", "pencil", "case", "pencil case"],
+        "sirt_cantasi": ["sırt", "sirt", "backpack", "çanta", "canta"],
+        "cekcekli": ["çekçek", "cekcek", "trolley"],
+        "beslenme": ["beslenme", "lunch", "lunchbox", "food"],
+        "suluk": ["suluk", "bottle", "matara"],
+    }
+
+    # sorguda hangi intent var?
+    active_terms = []
+    for _, terms in intent_map.items():
+        if any(t in nq for t in terms):
+            active_terms += terms
+
     tokens = nq.split()
+
     scored = []
     for p in products:
-        hay = norm(" ".join([p.get("brand_title",""), p.get("product_type","")]))
-        score = sum(1 for t in tokens if t in hay)
+        # Daha geniş "haystack": title + product_type + link
+        hay = norm(" ".join([
+            p.get("title",""),
+            p.get("brand_title",""),
+            p.get("product_type",""),
+            p.get("link",""),
+        ]))
+
+        score = 0
+        score += sum(1 for t in tokens if t in hay)
+        if active_terms:
+            score += 3 * sum(1 for t in active_terms if t in hay)
+
         if score > 0:
             scored.append((score, p))
+
     scored.sort(key=lambda x: x[0], reverse=True)
     return [p for _, p in scored[:k]]
+
+if not hits:
+    return {
+        "answer": "Bu aramada eşleşen ürün bulamadım. İsterseniz 'Smiggle kalem kutusu' gibi marka + ürün tipiyle arayabilir veya site içi aramada deneyebilirsiniz.",
+        "hits": []
+    }
+
+
 
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
@@ -199,7 +236,7 @@ def widget():
   btn.onclick = () => {
     box.style.display = box.style.display === "none" ? "block" : "none";
     if (msgs.childElementCount === 0) {
-      addMsg("Pembecida", "Merhaba! Ürünlerimiz orijinaldir. Size yardımcı olayım: Kimin için hediye arıyorsunuz, yaş ve bütçe aralığı var mı?");
+      addMsg("Pembecida", "Merhaba! Size yardımcı olayım: Ne aradığınızı öğrenebilir miyim? Veya kimin için hediye arıyorsunuz, yaş ve bütçe aralığı var mı?");
     }
   };
 
@@ -237,5 +274,6 @@ def debug_search(q: str, k: int = 10):
     products = load_products()
     hits = simple_search(products, q, k=k)
     return {"query": q, "hits": hits}
+
 
 
