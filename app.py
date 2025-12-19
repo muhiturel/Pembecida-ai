@@ -237,8 +237,8 @@ def widget():
   const API_BASE = "https://pembecida-ai.onrender.com";
 
   const btn = document.createElement("button");
-  btn.innerText = "Yardım";
-  btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer;";
+  btn.innerText = "PembeGPT";
+  btn.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer;color:red";
   document.body.appendChild(btn);
 
   const box = document.createElement("div");
@@ -309,3 +309,4 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
