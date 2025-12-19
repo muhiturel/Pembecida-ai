@@ -1,0 +1,3 @@
+<script>
+console.log("PB CHAT SCRIPT OK");
+</script>
