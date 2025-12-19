@@ -163,7 +163,7 @@ def widget():
     # Not: http/https render tarafında https olacak.
     js = """
 (() => {
-  const API_BASE = location.origin.replace('www.', ''); // render domain
+  const API_BASE = "https://pembecida-ai.onrender.com"; // render domain
   const btn = document.createElement("button");
   btn.innerText = "Yardım";
   btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer;";
@@ -225,6 +225,7 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
 
