@@ -202,7 +202,7 @@ def debug_fields(limit: int = 5):
 def chat(inp: ChatIn):
     products = load_products()
     hits = simple_search(products, inp.query, k=6)
-
+    
     # Hit yoksa: ASLA uydurma ürün yok. LLM'e bile gitme.
     if not hits:
         return {
@@ -248,7 +248,19 @@ def chat(inp: ChatIn):
         ]
     )
 
-    return {"answer": resp.output_text, "hits": hits[:5]}
+    top = hits[:5]
+products = []
+for p in top:
+    products.append({
+        "title": p.get("brand_title") or p.get("title") or "",
+        "link": p.get("link") or "",
+        "price": (p.get("sale_price") or p.get("price") or ""),
+        "image": p.get("image_link") or "",
+        "brand": p.get("brand") or "",
+        "product_type": p.get("product_type") or "",
+    })
+
+return {"answer": resp.output_text, "products": products}
 
 @app.get("/pb-chat/widget.js")
 def widget():
@@ -315,8 +327,31 @@ def widget():
         throw new Error((data && (data.detail || data.error)) || ("HTTP " + res.status));
       }
 
-      msgs.lastChild.querySelector("div:last-child").innerHTML =
-        (data.answer || "Şu an yanıt oluşturamadım, lütfen tekrar dener misiniz?").replace(/\\n/g, "<br/>");
+      const answerHtml = (data.answer || "").replace(/\n/g, "<br/>");
+
+const cards = (data.products || []).map(p => {
+  const safeTitle = (p.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const safePrice = (p.price || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const safeLink = (p.link || "#");
+  const img = p.image || "";
+
+  return `
+    <div style="display:flex;gap:10px;padding:10px;border:1px solid #eee;border-radius:12px;margin-top:10px;">
+      ${img ? `<img src="${img}" alt="${safeTitle}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #eee;">` : ``}
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:14px;line-height:1.25;margin-bottom:4px;">${safeTitle}</div>
+        ${safePrice ? `<div style="font-size:13px;color:#333;margin-bottom:8px;">${safePrice}</div>` : ``}
+        <a href="${safeLink}" target="_blank" rel="noopener"
+           style="display:inline-block;text-decoration:none;padding:8px 10px;border-radius:10px;border:1px solid #ddd;font-size:13px;">
+          Ürünü İncele
+        </a>
+      </div>
+    </div>
+  `;
+}).join("");
+
+msgs.lastChild.querySelector("div:last-child").innerHTML =
+  answerHtml + (cards ? `<div style="margin-top:8px;">${cards}</div>` : "");
 
     } catch (e) {
       msgs.lastChild.querySelector("div:last-child").innerHTML =
@@ -349,6 +384,7 @@ def debug_fields(limit: int = 5):
             "link": p.get("link"),
         })
     return {"count": len(load_products()), "rows": out}
+
 
 
 
