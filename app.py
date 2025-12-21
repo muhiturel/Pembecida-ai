@@ -183,15 +183,14 @@ def chat(inp: ChatIn):
     products = load_products()
 
 # products.json boşsa (deploy sonrası sık olur) otomatik reindex dene
-if not products:
-    try:
-        fetch_and_index_feed()
-    except Exception:
-        pass
-    products = load_products()
+    if not products:
+        try:
+            fetch_and_index_feed()
+        except Exception:
+            pass
+        products = load_products()
 
-hits = simple_search(products, inp.query, k=6)
-
+    hits = simple_search(products, inp.query, k=6)
 
     if not hits:
         return {
@@ -361,6 +360,7 @@ document.head.appendChild(style);
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
