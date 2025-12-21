@@ -183,15 +183,15 @@ def chat(inp: ChatIn):
     products = load_products()
     hits = simple_search(products, inp.query, k=6)
 
-if not hits:
-    return {
+    if not hits:
+        return {
         "answer": (
             'Bu aramada eşleşen ürün bulamadım. '
             'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
             'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular" target="_blank" rel="noopener">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
         ),
         "products": []
-    }
+        }
 
     top = hits[:5]
     ui_products = []
@@ -343,6 +343,7 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
