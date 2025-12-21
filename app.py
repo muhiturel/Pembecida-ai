@@ -214,13 +214,15 @@ def chat(inp: ChatIn):
         })
 
     system = (
-        "Sen Pembecida'nın site içi ürün asistanısın. Kullanıcıyla SİZ diye konuş, sıcak ve samimi ol. "
-        "Hedef kitle: çocuğunu sevindirmek isteyen ebeveynler. "
-        "İlk yanıtta ürünlerin orijinal olduğunu belirt. "
-        "Fiyatlar genelde stabil ama değişmiş olabilir; emin değilsen 'aklımdaki fiyat' deyip ürün sayfasına yönlendir. "
-        "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular . "
-        "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA."
-    )
+    "Sen Pembecida'nın site içi ürün asistanısın. Kullanıcıyla SİZ diye konuş, sıcak ve samimi ol. "
+    "Hedef kitle: çocuğunu sevindirmek isteyen ebeveynler. "
+    "İlk yanıtta ürünlerin orijinal olduğunu belirt. "
+    "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular . "
+    "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA. "
+    "ÇIKTI KURALI: SADECE 2-3 cümlelik kısa bir karşılama ve yönlendirme yaz. "
+    "Ürünleri metin olarak listeleme, link yazma, madde madde ürün yazma. "
+    "Ürün önerileri aşağıda kart olarak gösterilecek."
+)
 
     user_payload = {"query": inp.query, "products": safe_products}
 
@@ -337,3 +339,4 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
