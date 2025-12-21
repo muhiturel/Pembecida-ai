@@ -184,14 +184,14 @@ def chat(inp: ChatIn):
     hits = simple_search(products, inp.query, k=6)
 
     if not hits:
-        return {
-            "answer": (
-                "Bu aramada eşleşen ürün bulamadım. Ürünlerimiz orijinaldir. "
-                "İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). "
-                "İade/kargo gibi konular için: https://www.pembecida.com/sikca-sorulan-sorular"
-            ),
-            "products": []
-        }
+    return {
+        "answer": (
+            'Bu aramada eşleşen ürün bulamadım. '
+            'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
+            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular" target="_blank" rel="noopener">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
+        ),
+        "products": []
+    }
 
     top = hits[:5]
     ui_products = []
@@ -281,7 +281,7 @@ def widget():
   btn.onclick = () => {
     box.style.display = box.style.display === "none" ? "block" : "none";
     if (msgs.childElementCount === 0) {
-      addMsg("Pembecida", "Merhaba! Ürünlerimiz orijinaldir. Size yardımcı olayım: Ne arıyorsunuz?");
+      addMsg("Pembecida", "Merhaba! Size yardımcı olayım: Ne arıyorsunuz? Örn: “Smiggle kalem kutusu”, “8 yaş hediye”, “Pop Mart blind box”.");
     }
   };
 
@@ -343,5 +343,6 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
