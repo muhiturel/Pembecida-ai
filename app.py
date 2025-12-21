@@ -248,7 +248,7 @@ def chat(inp: ChatIn):
         ]
     )
 
-    top = hits[:5]
+top = hits[:5]
 products = []
 for p in top:
     products.append({
@@ -256,11 +256,12 @@ for p in top:
         "link": p.get("link") or "",
         "price": (p.get("sale_price") or p.get("price") or ""),
         "image": p.get("image_link") or "",
-        "brand": p.get("brand") or "",
-        "product_type": p.get("product_type") or "",
     })
 
-return {"answer": resp.output_text, "products": products}
+return {
+    "answer": resp.output_text,
+    "products": products
+}
 
 @app.get("/pb-chat/widget.js")
 def widget():
@@ -384,6 +385,7 @@ def debug_fields(limit: int = 5):
             "link": p.get("link"),
         })
     return {"count": len(load_products()), "rows": out}
+
 
 
 
