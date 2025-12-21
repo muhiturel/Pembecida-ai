@@ -183,7 +183,7 @@ def chat(inp: ChatIn):
     products = load_products()
     hits = simple_search(products, inp.query, k=6)
 
-    if not hits:
+if not hits:
     return {
         "answer": (
             'Bu aramada eşleşen ürün bulamadım. '
@@ -343,6 +343,7 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
