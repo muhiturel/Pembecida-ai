@@ -264,6 +264,7 @@ def widget():
       right:16px;
       bottom:16px;
       z-index:99999;
+      border: 3px solid #fff;
 
   /* 2 kat büyütme */
       padding:20px 28px;
@@ -274,7 +275,7 @@ def widget():
       cursor:pointer;
 
   /* degrade + yazı */
-      background: linear-gradient(45deg, #ff5db1, #ff7a00);
+      background: linear-gradient(45deg, #feda75, #fa7e1e, #d62976);
       color:#fff;
       font-weight:800;
 
@@ -294,7 +295,7 @@ document.body.appendChild(btn);
       <button id="pb_send" style="padding:10px 12px;border-radius:10px;border:0;cursor:pointer;">Gönder</button>
     </div>
     <div style="padding:8px 14px;font-size:12px;color:#666;border-top:1px solid #f3f3f3;">
-      Not: Ürünler orijinaldir. Fiyatlar değişmiş olabilir; en güncel bilgi ürün sayfasındadır.
+      Ürünler orijinaldir. En güncel bilgi ve fiyat ürün sayfasındadır.
     </div>
   `;
   document.body.appendChild(box);
@@ -306,12 +307,15 @@ style.innerHTML = `
 
   /* Sadece mobilde butonu yatayda ortala */
   @media (max-width: 480px) {
-    button.pb-gpt-btn {
-      left: 50% !important;
-      right: auto !important;
-      transform: translateX(-50%) !important;
-    }
+  button.pb-gpt-btn {
+    left: 50% !important;
+    right: auto !important;
+
+    /* Mobilde 1.7 ölçek + ortalama */
+    transform: translateX(-50%) scale(0.85) !important;
+    transform-origin: center bottom !important;
   }
+}
 `;
 document.head.appendChild(style);
 
@@ -395,6 +399,7 @@ btn.classList.add("pb-gpt-btn");
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
