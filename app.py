@@ -181,7 +181,17 @@ def debug_search(q: str, k: int = 10):
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
     products = load_products()
-    hits = simple_search(products, inp.query, k=6)
+
+# products.json boşsa (deploy sonrası sık olur) otomatik reindex dene
+if not products:
+    try:
+        fetch_and_index_feed()
+    except Exception:
+        pass
+    products = load_products()
+
+hits = simple_search(products, inp.query, k=6)
+
 
     if not hits:
         return {
@@ -265,6 +275,14 @@ def widget():
     </div>
   `;
   document.body.appendChild(box);
+// Linkleri mavi ve altı çizgili göster
+const style = document.createElement("style");
+style.innerHTML = `
+  #pb_msgs a { color: #0645AD; text-decoration: underline; }
+  #pb_msgs a:visited { color: #0b0080; }
+`;
+document.head.appendChild(style);
+
 
   const msgs = box.querySelector("#pb_msgs");
   const input = box.querySelector("#pb_in");
@@ -343,6 +361,7 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
