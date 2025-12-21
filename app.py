@@ -7,41 +7,25 @@ import requests
 from lxml import etree
 from openai import OpenAI
 
-# -------------------------
-# App & CORS
-# -------------------------
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # MVP: herkese açık. Prod'da pembecida domainleriyle sınırlarız.
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------------
-# Config
-# -------------------------
 FEED_URL = os.environ.get("FEED_URL", "").strip()
-STORE_PATH = "products.json"
-
-if not FEED_URL:
-    # FEED_URL yoksa deploy'da reindex 500 verecek; health yine çalışır.
-    pass
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STORE_PATH = os.path.join(BASE_DIR, "products.json")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
-# -------------------------
-# Models
-# -------------------------
 class ChatIn(BaseModel):
     query: str
     page_url: str | None = None
 
-# -------------------------
-# Helpers
-# -------------------------
 def norm(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
@@ -74,8 +58,15 @@ def fetch_and_index_feed():
     products = []
     for it in items:
         def get(tag):
+            # 1) g:tag
             el = it.find(f"g:{tag}", namespaces=ns)
-            return (el.text or "").strip() if el is not None else ""
+            if el is not None and (el.text or "").strip():
+                return (el.text or "").strip()
+            # 2) fallback: namespacesiz
+            el2 = it.find(tag)
+            if el2 is not None and (el2.text or "").strip():
+                return (el2.text or "").strip()
+            return ""
 
         pid = get("id")
         title = get("title")
@@ -85,9 +76,9 @@ def fetch_and_index_feed():
         sale_price = get("sale_price")
         product_type = get("product_type")
         image = get("image_link")
-        add_imgs = [(el.text or "").strip() for el in it.findall("g:additional_image_link", namespaces=ns)]
+        add_imgs = [(el.text or "").strip() for el in it.findall("g:additional_image_link", namespaces=ns)] \
+                   or [(el.text or "").strip() for el in it.findall("additional_image_link")]
 
-        # Minimum alanlar
         if not pid or not link:
             continue
 
@@ -112,7 +103,6 @@ def simple_search(products, q, k=6):
     if not nq:
         return []
 
-    # TR/EN niyet sözlüğü (MVP)
     intent_map = {
         "kalem_kutusu": ["kalem", "kalemkutusu", "kalem kutusu", "kalemlik", "pencil", "case", "pencil case"],
         "sirt_cantasi": ["sırt", "sirt", "backpack", "çanta", "canta"],
@@ -127,10 +117,9 @@ def simple_search(products, q, k=6):
             active_terms += terms
 
     tokens = nq.split()
-
     scored = []
+
     for p in products:
-        # daha geniş alanlarda ara
         hay = norm(" ".join([
             p.get("title", ""),
             p.get("brand_title", ""),
@@ -149,9 +138,6 @@ def simple_search(products, q, k=6):
     scored.sort(key=lambda x: x[0], reverse=True)
     return [p for _, p in scored[:k]]
 
-# -------------------------
-# Routes
-# -------------------------
 @app.get("/pb-chat/health")
 def health():
     return {"ok": True}
@@ -171,16 +157,6 @@ def debug_sample(limit: int = 10):
     products = load_products()
     return {"count": len(products), "sample": products[:limit]}
 
-@app.get("/pb-chat/debug/search")
-def debug_search(q: str, k: int = 10):
-    products = load_products()
-    hits = simple_search(products, q, k=k)
-    return {"query": q, "hits": hits}
-
-# -------------------------
-# GitHub → app.py → en altlara (debug/sample ve debug/search’in altına) şunu ekle:
-# -------------------------
-
 @app.get("/pb-chat/debug/fields")
 def debug_fields(limit: int = 5):
     products = load_products()[:limit]
@@ -196,14 +172,17 @@ def debug_fields(limit: int = 5):
         })
     return {"count": len(load_products()), "rows": out}
 
-
+@app.get("/pb-chat/debug/search")
+def debug_search(q: str, k: int = 10):
+    products = load_products()
+    hits = simple_search(products, q, k=k)
+    return {"query": q, "hits": hits}
 
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
     products = load_products()
     hits = simple_search(products, inp.query, k=6)
-    
-    # Hit yoksa: ASLA uydurma ürün yok. LLM'e bile gitme.
+
     if not hits:
         return {
             "answer": (
@@ -211,15 +190,24 @@ def chat(inp: ChatIn):
                 "İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). "
                 "İade/kargo gibi konular için: https://www.pembecida.com/sikca-sorulan-sorular"
             ),
-            "hits": []
+            "products": []
         }
 
-    # LLM'e verilecek güvenli ürün listesi (yalnızca feed'den)
+    top = hits[:5]
+    ui_products = []
+    for p in top:
+        ui_products.append({
+            "title": p.get("brand_title") or p.get("title") or "",
+            "link": p.get("link") or "",
+            "price": (p.get("sale_price") or p.get("price") or ""),
+            "image": p.get("image_link") or "",
+        })
+
     safe_products = []
-    for p in hits:
+    for p in top:
         safe_products.append({
             "title": (p.get("brand_title") or "").strip(),
-            "price": (p.get("sale_price") or p.get("price") or "").strip(),
+            "price": ((p.get("sale_price") or p.get("price") or "")).strip(),
             "link": (p.get("link") or "").strip(),
             "product_type": (p.get("product_type") or "").strip(),
             "brand": (p.get("brand") or "").strip(),
@@ -234,52 +222,34 @@ def chat(inp: ChatIn):
         "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA."
     )
 
-    user_payload = {
-        "query": inp.query,
-        "products": safe_products
-    }
+    user_payload = {"query": inp.query, "products": safe_products}
 
-    # OpenAI çağrısı
     resp = client.responses.create(
         model="gpt-4.1-mini",
         input=[
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
-        ]
+        ],
     )
 
-top = hits[:5]
-products = []
-for p in top:
-    products.append({
-        "title": p.get("brand_title") or p.get("title") or "",
-        "link": p.get("link") or "",
-        "price": (p.get("sale_price") or p.get("price") or ""),
-        "image": p.get("image_link") or "",
-    })
-
-return {
-    "answer": resp.output_text,
-    "products": products
-}
+    return {"answer": resp.output_text, "products": ui_products}
 
 @app.get("/pb-chat/widget.js")
 def widget():
-    # API_BASE sabit: render domain
     js = """
 (() => {
   const API_BASE = "https://pembecida-ai.onrender.com";
 
   const btn = document.createElement("button");
-  btn.innerText = "PembeGPT";
-  btn.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer";
+  btn.innerText = "Yardım";
+  btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;padding:10px 14px;border-radius:999px;border:0;cursor:pointer;";
   document.body.appendChild(btn);
 
   const box = document.createElement("div");
-  box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:99999;width:340px;max-width:calc(100vw - 32px);height:420px;background:#fff;border:1px solid #ddd;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
+  box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:99999;width:340px;max-width:calc(100vw - 32px);height:520px;background:#fff;border:1px solid #ddd;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
   box.innerHTML = `
     <div style="padding:12px 14px;border-bottom:1px solid #eee;font-weight:600;">Pembecida Asistan</div>
-    <div id="pb_msgs" style="padding:10px 14px;height:300px;overflow:auto;font-size:14px;line-height:1.35;"></div>
+    <div id="pb_msgs" style="padding:10px 14px;height:390px;overflow:auto;font-size:14px;line-height:1.35;"></div>
     <div style="display:flex;gap:8px;padding:10px 10px;border-top:1px solid #eee;">
       <input id="pb_in" placeholder="Ne arıyorsunuz? (örn: 8 yaş hediye, Pop Mart, kalem kutusu...)" style="flex:1;padding:10px;border:1px solid #ddd;border-radius:10px;"/>
       <button id="pb_send" style="padding:10px 12px;border-radius:10px;border:0;cursor:pointer;">Gönder</button>
@@ -305,8 +275,33 @@ def widget():
   btn.onclick = () => {
     box.style.display = box.style.display === "none" ? "block" : "none";
     if (msgs.childElementCount === 0) {
-      addMsg("Pembecida", "Merhaba! Ürünlerimiz orijinaldir. Size yardımcı olayım: Ne arıyorsunuz? (İsterseniz yaş / bütçe / kategori de yazabilirsiniz.)");
+      addMsg("Pembecida", "Merhaba! Ürünlerimiz orijinaldir. Size yardımcı olayım: Ne arıyorsunuz?");
     }
+  };
+
+  const escapeHtml = (s) => (s || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+  const renderProducts = (products) => {
+    if (!products || !products.length) return "";
+    return products.map(p => {
+      const title = escapeHtml(p.title || "");
+      const price = escapeHtml(p.price || "");
+      const link = p.link || "#";
+      const img = p.image || "";
+      return `
+        <div style="display:flex;gap:10px;padding:10px;border:1px solid #eee;border-radius:12px;margin-top:10px;">
+          ${img ? `<img src="${img}" alt="${title}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #eee;">` : ``}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:14px;line-height:1.25;margin-bottom:4px;">${title}</div>
+            ${price ? `<div style="font-size:13px;color:#333;margin-bottom:8px;">${price}</div>` : ``}
+            <a href="${link}" target="_blank" rel="noopener"
+               style="display:inline-block;text-decoration:none;padding:8px 10px;border-radius:10px;border:1px solid #ddd;font-size:13px;">
+              Ürünü İncele
+            </a>
+          </div>
+        </div>
+      `;
+    }).join("");
   };
 
   const doSend = async () => {
@@ -324,35 +319,11 @@ def widget():
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error((data && (data.detail || data.error)) || ("HTTP " + res.status));
-      }
+      if (!res.ok) throw new Error((data && (data.detail || data.error)) || ("HTTP " + res.status));
 
-      const answerHtml = (data.answer || "").replace(/\n/g, "<br/>");
-
-const cards = (data.products || []).map(p => {
-  const safeTitle = (p.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const safePrice = (p.price || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const safeLink = (p.link || "#");
-  const img = p.image || "";
-
-  return `
-    <div style="display:flex;gap:10px;padding:10px;border:1px solid #eee;border-radius:12px;margin-top:10px;">
-      ${img ? `<img src="${img}" alt="${safeTitle}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #eee;">` : ``}
-      <div style="flex:1;min-width:0;">
-        <div style="font-weight:600;font-size:14px;line-height:1.25;margin-bottom:4px;">${safeTitle}</div>
-        ${safePrice ? `<div style="font-size:13px;color:#333;margin-bottom:8px;">${safePrice}</div>` : ``}
-        <a href="${safeLink}" target="_blank" rel="noopener"
-           style="display:inline-block;text-decoration:none;padding:8px 10px;border-radius:10px;border:1px solid #ddd;font-size:13px;">
-          Ürünü İncele
-        </a>
-      </div>
-    </div>
-  `;
-}).join("");
-
-msgs.lastChild.querySelector("div:last-child").innerHTML =
-  answerHtml + (cards ? `<div style="margin-top:8px;">${cards}</div>` : "");
+      const answerHtml = (data.answer || "").replace(/\\n/g, "<br/>");
+      const cardsHtml = renderProducts(data.products || []);
+      msgs.lastChild.querySelector("div:last-child").innerHTML = answerHtml + cardsHtml;
 
     } catch (e) {
       msgs.lastChild.querySelector("div:last-child").innerHTML =
@@ -366,27 +337,3 @@ msgs.lastChild.querySelector("div:last-child").innerHTML =
 """.strip()
 
     return Response(js, media_type="application/javascript")
-
-# -------------------------
-# Son eklendi
-# -------------------------
-
-@app.get("/pb-chat/debug/fields")
-def debug_fields(limit: int = 5):
-    products = load_products()[:limit]
-    out = []
-    for p in products:
-        out.append({
-            "id": p.get("id"),
-            "title": p.get("title"),
-            "brand": p.get("brand"),
-            "brand_title": p.get("brand_title"),
-            "product_type": p.get("product_type"),
-            "link": p.get("link"),
-        })
-    return {"count": len(load_products()), "rows": out}
-
-
-
-
-
