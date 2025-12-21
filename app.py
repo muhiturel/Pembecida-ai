@@ -224,7 +224,11 @@ def chat(inp: ChatIn):
     "Ürün önerileri aşağıda kart olarak gösterilecek."
 )
 
-    user_payload = {"query": inp.query, "products": safe_products}
+    user_payload = {
+    "query": inp.query,
+    "products": safe_products,
+    "ui_note": "Ürünleri metin olarak listeleme; kartlar ayrı gösterilecek."
+}
 
     resp = client.responses.create(
         model="gpt-4.1-mini",
@@ -339,4 +343,5 @@ def widget():
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
