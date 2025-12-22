@@ -266,12 +266,28 @@ def reindex_post():
 @app.get("/pb-chat/debug/sample")
 def debug_sample(limit: int = 10):
     products = load_products()
+    products = load_products()
+    if not products:
+        try:
+            fetch_and_index_feed()
+    except Exception:
+        pass
+    products = load_products()
+
     return {"count": len(products), "sample": products[:limit]}
 
 
 @app.get("/pb-chat/debug/fields")
 def debug_fields(limit: int = 5):
     products = load_products()
+    products = load_products()
+    if not products:
+        try:
+            fetch_and_index_feed()
+        except Exception:
+            pass
+        products = load_products()
+
     rows = []
     for p in products[:limit]:
         rows.append({
@@ -287,6 +303,10 @@ def debug_fields(limit: int = 5):
 
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
+    q_fixed = fix_brand_typo(inp.query)
+    q_fixed = fix_keyword_typo(q_fixed)
+    hits = simple_search(products, q_fixed, k=6)
+    
     # 0) Ürünler boşsa otomatik reindex (deploy sonrası products.json sıfırlanabiliyor)
     products = load_products()
     if not products:
@@ -299,6 +319,40 @@ def chat(inp: ChatIn):
     # 1) Önce brand typo düzelt
     q_fixed = fix_brand_typo(inp.query)
     hits = simple_search(products, q_fixed, k=6)
+def fix_keyword_typo(q: str) -> str:
+    nq = norm(q)
+    if not nq:
+        return q
+
+    tokens = nq.split()
+    if len(tokens) > 4:
+        return q
+
+    known_kw = ["crybaby", "labubu", "skullpanda", "hirono", "dimoo", "molly", "the monsters", "popmart", "pop mart"]
+    new_tokens = []
+    changed = False
+
+    for t in tokens:
+        if len(t) < 4:
+            new_tokens.append(t)
+            continue
+
+        best_ratio, best_k = 0.0, None
+        for k in known_kw:
+            if " " in k:
+                continue
+            r = SequenceMatcher(None, t, k).ratio()
+            if r > best_ratio:
+                best_ratio, best_k = r, k
+
+        # cyrbaby -> crybaby gibi durumlar için
+        if best_k and best_ratio >= 0.84:
+            new_tokens.append(best_k)
+            changed = True
+        else:
+            new_tokens.append(t)
+
+    return " ".join(new_tokens) if changed else q
 
     # 2) Hala yoksa konservatif fuzzy dene
     if not hits:
@@ -532,3 +586,4 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
