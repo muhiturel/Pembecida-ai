@@ -4,12 +4,17 @@ from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
 
 import requests
 from lxml import etree
+
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 
+
+# =========================
+# App + CORS
+# =========================
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -19,9 +24,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Config ----------
+# =========================
+# Config
+# =========================
 FEED_URL = os.environ.get("FEED_URL", "").strip()
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(BASE_DIR, "products.json")
 
@@ -34,8 +40,12 @@ class ChatIn(BaseModel):
     page_url: str | None = None
 
 
+# =========================
+# Helpers
+# =========================
 def norm(s: str) -> str:
     s = (s or "").lower()
+    s = s.replace("ı", "i")  # aramada pratik
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -56,7 +66,6 @@ def save_products(products):
 
 
 def add_utm(url: str) -> str:
-    """UTM garantisi (backend)."""
     if not url:
         return url
     try:
@@ -71,65 +80,183 @@ def add_utm(url: str) -> str:
         return url
 
 
-def fetch_and_index_feed() -> int:
-    if not FEED_URL:
-        raise RuntimeError("FEED_URL env is missing")
+def localname(el) -> str:
+    try:
+        return etree.QName(el).localname.lower()
+    except Exception:
+        # fallback (tag "{ns}name" olabilir)
+        t = str(getattr(el, "tag", "")).lower()
+        if "}" in t:
+            return t.split("}", 1)[1]
+        return t
 
-    r = requests.get(FEED_URL, timeout=120)
-    r.raise_for_status()
 
-    xml = etree.fromstring(r.content)
-    ns = {"g": "http://base.google.com/ns/1.0"}
+def safe_int(v, default=0):
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return default
 
-    # 1) Önce en yaygın düğümleri dene
-    items = xml.findall(".//item")  # Google Shopping / RSS benzeri
-    if not items:
-        # T-Soft / custom XML varyasyonları
-        candidates = [".//Urun", ".//urun", ".//Product", ".//product", ".//products/*", ".//Items/*"]
-        for path in candidates:
-            items = xml.findall(path)
-            if items:
-                break
 
-    def find_text(node, tag_names):
-        """Birden fazla olası tag adından ilk dolu olanı bulur (namespace'li ve namespacesiz)."""
-        for t in tag_names:
-            # google namespace dene
-            el = node.find(f"g:{t}", namespaces=ns)
-            if el is not None and (el.text or "").strip():
-                return (el.text or "").strip()
-
-            # namespacesiz
-            el2 = node.find(t)
-            if el2 is not None and (el2.text or "").strip():
-                return (el2.text or "").strip()
-
-            # bazı XML’lerde tag’ler nested/uppercase olabilir, geniş arama:
-            el3 = node.find(f".//{t}")
-            if el3 is not None and (el3.text or "").strip():
-                return (el3.text or "").strip()
-
+def clean_llm_answer(text: str) -> str:
+    """
+    LLM bazen ürünleri markdown liste olarak döküyor:
+      [Ürün](https://www.pembecida.com/....) - 1234.00 TRY
+    Kartları zaten ayrı bastığımız için bu satırları temizliyoruz.
+    """
+    if not text:
         return ""
 
-    def find_all_texts(node, tag_names):
+    lines = text.splitlines()
+    out = []
+    for ln in lines:
+        s = ln.strip()
+
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and ("[" in s and "](" in s):
+            if ("try" in s.lower()) or ("tl" in s.lower()) or ("₺" in s) or ("price" in s.lower()):
+                continue
+            if s.startswith("-") or s.startswith("["):
+                continue
+
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and (s.startswith("-") or s.startswith("http")):
+            continue
+
+        out.append(ln)
+
+    cleaned = "\n".join(out).strip()
+    if len(cleaned) < 20:
+        cleaned = (
+            "Size uygun birkaç öneri çıkardım; aşağıda kartlar halinde görebilirsiniz. "
+            "İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daraltayım."
+        )
+    return cleaned
+
+
+# =========================
+# Feed Parser (XML + JSON)
+# =========================
+def extract_from_json(data):
+    """
+    Şema bağımsız JSON parse:
+    - products/product listelerini yakalamaya çalışır
+    - her product için alanları normalize eder
+    """
+    # ürün listesine ulaş
+    candidates = []
+    if isinstance(data, list):
+        candidates = data
+    elif isinstance(data, dict):
+        for k in ["products", "Products", "product", "Product", "items", "Items", "data", "Data"]:
+            if k in data and isinstance(data[k], list):
+                candidates = data[k]
+                break
+        if not candidates:
+            # data.products gibi nested olabilir
+            d = data.get("data") if isinstance(data.get("data"), dict) else None
+            if d:
+                for k in ["products", "product", "items"]:
+                    if k in d and isinstance(d[k], list):
+                        candidates = d[k]
+                        break
+
+    products = []
+    for p in candidates or []:
+        if not isinstance(p, dict):
+            continue
+
+        pid = str(p.get("id") or p.get("ID") or p.get("productId") or p.get("UrunID") or p.get("webserviskodu") or "").strip()
+        title = str(p.get("title") or p.get("name") or p.get("UrunAdi") or p.get("Baslik") or "").strip()
+        brand = str(p.get("brand") or p.get("Marka") or p.get("Brand") or "").strip()
+        link = str(p.get("link") or p.get("url") or p.get("Url") or p.get("TamLink") or p.get("SeoLink") or "").strip()
+
+        # fiyatlar
+        price = str(p.get("price") or p.get("Price") or p.get("Fiyat") or p.get("SatisFiyati") or "").strip()
+        sale_price = str(p.get("sale_price") or p.get("SalePrice") or p.get("IndirimliFiyat") or p.get("KampanyaFiyati") or "").strip()
+
+        # kategori / tip
+        product_type = str(p.get("product_type") or p.get("category") or p.get("Kategori") or p.get("CategoryPath") or "").strip()
+
+        # görseller
+        image = str(p.get("image_link") or p.get("image") or p.get("Image") or p.get("AnaResim") or "").strip()
+        add_imgs = []
+        imgs = p.get("additional_image_link") or p.get("images") or p.get("Images") or p.get("imgs")
+        if isinstance(imgs, list):
+            add_imgs = [str(x).strip() for x in imgs if str(x).strip()]
+
+        # açıklama + meta
+        description = str(p.get("description") or p.get("Description") or p.get("UrunAciklama") or "").strip()
+        meta_title = str(p.get("meta_title") or p.get("MetaTitle") or p.get("SeoTitle") or "").strip()
+        meta_desc = str(p.get("meta_description") or p.get("MetaDescription") or p.get("SeoDescription") or "").strip()
+        meta_keys = str(p.get("meta_keywords") or p.get("MetaKeywords") or p.get("SeoKeywords") or "").strip()
+
+        # code (sıra numarası)
+        code = safe_int(p.get("code") or p.get("Code") or p.get("sira") or p.get("Sira") or 0, 0)
+
+        # subproducts + renk (type1)
+        colors = []
+        subp = p.get("subproducts") or p.get("SubProducts") or p.get("subProducts")
+        if isinstance(subp, list):
+            for sp in subp:
+                if isinstance(sp, dict):
+                    c = str(sp.get("type1") or sp.get("Type1") or sp.get("renk") or sp.get("Renk") or "").strip()
+                    if c:
+                        colors.append(c)
+
+        # minimum
+        if not pid or not link:
+            continue
+
+        products.append({
+            "id": pid,
+            "code": code,
+            "title": title,
+            "brand": brand,
+            "brand_title": f"{brand} {title}".strip(),
+            "link": link,
+            "price": price,
+            "sale_price": sale_price,
+            "product_type": product_type,
+            "description": description,
+            "meta_title": meta_title,
+            "meta_description": meta_desc,
+            "meta_keywords": meta_keys,
+            "color_terms": list(dict.fromkeys([c for c in colors if c])),
+            "image_link": image,
+            "additional_image_link": add_imgs,
+        })
+
+    return products
+
+
+def extract_from_xml(xml_root):
+    """
+    Şema bağımsız XML parse:
+    - tüm node’ları dolaşır
+    - localname’i product/urun/item benzeri olan node’ları product kabul eder
+    - alt node/attribute’lardan alanları çıkarır
+    """
+    def find_text(node, possible_names):
+        # child tag matches (namespace bağımsız)
+        for child in node.iter():
+            ln = localname(child)
+            if ln in possible_names:
+                tx = (child.text or "").strip()
+                if tx:
+                    return tx
+        # attribute matches
+        for k, v in (node.attrib or {}).items():
+            if k.lower() in possible_names and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    def find_many_texts(node, possible_names):
         out = []
-        for t in tag_names:
-            # namespace'li
-            for el in node.findall(f"g:{t}", namespaces=ns):
-                tx = (el.text or "").strip()
+        for child in node.iter():
+            if localname(child) in possible_names:
+                tx = (child.text or "").strip()
                 if tx:
                     out.append(tx)
-            # namespacesiz
-            for el in node.findall(t):
-                tx = (el.text or "").strip()
-                if tx:
-                    out.append(tx)
-            # geniş
-            for el in node.findall(f".//{t}"):
-                tx = (el.text or "").strip()
-                if tx:
-                    out.append(tx)
-        # unique koru, sırayı bozma
+        # unique preserve
         seen = set()
         uniq = []
         for x in out:
@@ -138,29 +265,63 @@ def fetch_and_index_feed() -> int:
                 seen.add(x)
         return uniq
 
+    # product node adayları
+    product_nodes = []
+    for el in xml_root.iter():
+        ln = localname(el)
+        if ln in ("product", "urun", "item"):
+            product_nodes.append(el)
+
+    # bazen <products><productlist><p> gibi garip olabilir: çok node gelirse yanlış yakalamayı azalt
+    if len(product_nodes) > 20000:
+        # daha sıkı filtre: içinde link/url benzeri bir alan varsa product say
+        filtered = []
+        for el in product_nodes:
+            txt = etree.tostring(el, encoding="unicode", with_tail=False)
+            if ("http" in txt) and (("link" in txt.lower()) or ("url" in txt.lower()) or ("tamlink" in txt.lower()) or ("seolink" in txt.lower())):
+                filtered.append(el)
+        product_nodes = filtered
+
     products = []
-    for it in items:
-        pid = find_text(it, ["id", "ID", "UrunID", "urun_id", "ProductId", "product_id", "StokKodu", "ModelKodu", "webserviskodu"])
-        title = find_text(it, ["title", "Title", "Baslik", "Ad", "UrunAdi", "name"])
-        brand = find_text(it, ["brand", "Brand", "Marka", "brand_name"])
-        link = find_text(it, ["link", "Link", "Url", "url", "SeoLink", "TamLink", "Dislink", "ProductUrl"])
-        price = find_text(it, ["price", "Price", "Fiyat", "SatisFiyati", "satisfiyati", "sale_price", "SalePrice"])
-        sale_price = find_text(it, ["sale_price", "SalePrice", "IndirimliFiyat", "KampanyaFiyati"])
-        product_type = find_text(it, ["product_type", "ProductType", "Kategori", "Category", "category_path", "KategoriYolu"])
-        image = find_text(it, ["image_link", "image", "Image", "Resim", "MainImage", "AnaResim", "image_url"])
+    for p in product_nodes:
+        pid = find_text(p, ["id", "urunid", "productid", "webserviskodu", "stok", "stokkodu", "modelkodu"])
+        title = find_text(p, ["title", "name", "urunadi", "baslik", "ad"])
+        brand = find_text(p, ["brand", "marka"])
+        link = find_text(p, ["link", "url", "tamlink", "seolink", "dislink"])
 
-        add_imgs = find_all_texts(it, ["additional_image_link", "AdditionalImage", "Resim", "Images", "image", "Image"])
+        price = find_text(p, ["price", "fiyat", "satisfiyati", "satis", "satis_fiyat", "saleprice", "sale_price"])
+        sale_price = find_text(p, ["sale_price", "saleprice", "indirimlifiyat", "kampanyafiyati"])
 
-        # minimum alanlar
-        if not pid:
-            # bazı feedlerde id attribute olarak gelir: <Urun id="123">
-            pid = (it.get("id") or it.get("ID") or "").strip()
+        product_type = find_text(p, ["product_type", "kategori", "category", "categorypath", "kategoriyolu"])
+
+        image = find_text(p, ["image_link", "image", "resim", "anaresim", "mainimage"])
+        add_imgs = find_many_texts(p, ["additional_image_link", "image", "resim", "img", "images"])
+
+        description = find_text(p, ["description", "aciklama", "urunaciklama", "detay"])
+        meta_title = find_text(p, ["meta_title", "seotitle", "titlemeta"])
+        meta_desc = find_text(p, ["meta_description", "seodescription", "descriptionmeta", "metadescription"])
+        meta_keys = find_text(p, ["meta_keywords", "seokeywords", "keywords", "metakeywords"])
+
+        code = safe_int(find_text(p, ["code", "sirano", "sira", "sort", "order"]), 0)
+
+        # subproducts/type1 renk
+        colors = []
+        # subproducts node’u varsa ara
+        for sp in p.iter():
+            if localname(sp) in ("subproducts", "subproduct", "alturun", "alturunler"):
+                # type1 çocuklarında
+                for ch in sp.iter():
+                    if localname(ch) in ("type1", "renk", "color"):
+                        tx = (ch.text or "").strip()
+                        if tx:
+                            colors.append(tx)
 
         if not pid or not link:
             continue
 
         products.append({
             "id": pid,
+            "code": code,
             "title": title,
             "brand": brand,
             "brand_title": f"{brand} {title}".strip(),
@@ -168,85 +329,72 @@ def fetch_and_index_feed() -> int:
             "price": price,
             "sale_price": sale_price,
             "product_type": product_type,
+            "description": description,
+            "meta_title": meta_title,
+            "meta_description": meta_desc,
+            "meta_keywords": meta_keys,
+            "color_terms": list(dict.fromkeys([c for c in colors if c])),
             "image_link": image,
             "additional_image_link": add_imgs,
         })
+
+    return products
+
+
+def fetch_and_index_feed() -> int:
+    if not FEED_URL:
+        raise RuntimeError("FEED_URL env is missing")
+
+    r = requests.get(FEED_URL, timeout=180)
+    r.raise_for_status()
+
+    raw = r.content
+    head = raw.lstrip()[:1]
+
+    products = []
+
+    # JSON olabilir
+    if head in (b"{", b"["):
+        try:
+            data = r.json()
+            products = extract_from_json(data)
+        except Exception:
+            products = []
+    else:
+        # XML
+        try:
+            xml = etree.fromstring(raw)
+            products = extract_from_xml(xml)
+        except Exception:
+            products = []
 
     save_products(products)
     return len(products)
 
 
-
 def ensure_products_loaded():
-    """Ürünler boşsa otomatik reindex (deploy sonrası products.json sıfırlanabiliyor)."""
     products = load_products()
     if products:
         return products
-
     try:
         fetch_and_index_feed()
     except Exception:
-        # FEED erişimi vs hata varsa sessiz geç; chat tarafında fallback döner
         pass
     return load_products()
 
 
-# ---------- Search ----------
-def simple_search(products, q, k=6):
-    nq = norm(q)
-    if not nq:
-        return []
-
-    intent_map = {
-        "kalem_kutusu": ["kalem", "kalemkutusu", "kalem kutusu", "kalemlik", "pencil", "case", "pencil case"],
-        "sirt_cantasi": ["sırt", "sirt", "backpack", "çanta", "canta"],
-        "cekcekli": ["çekçek", "cekcek", "trolley", "çekçekli", "cekcekli"],
-        "beslenme": ["beslenme", "lunch", "lunchbox", "food", "beslenme çantası", "beslenme cantasi"],
-        "suluk": ["suluk", "bottle", "matara"],
-    }
-
-    active_terms = []
-    for _, terms in intent_map.items():
-        if any(t in nq for t in terms):
-            active_terms += terms
-
-    tokens = nq.split()
-    scored = []
-
-    for p in products:
-        hay = norm(" ".join([
-            p.get("title", ""),
-            p.get("brand_title", ""),
-            p.get("product_type", ""),
-            p.get("link", ""),
-        ]))
-
-        score = 0
-        score += sum(1 for t in tokens if t in hay)
-        if active_terms:
-            score += 3 * sum(1 for t in active_terms if t in hay)
-
-        if score > 0:
-            scored.append((score, p))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in scored[:k]]
-
-
+# =========================
+# Typo Fixing
+# =========================
 def fix_brand_typo(q: str) -> str:
-    """
-    Kısa typo'larda marka düzeltme (konservatif).
-    smgle/smigle -> smiggle gibi.
-    """
     nq = norm(q)
     if not nq:
         return q
-
     tokens = nq.split()
     if len(tokens) > 3:
         return q
 
-    known_single = ["smiggle", "popmart", "pembecida"]
+    known_single = ["smiggle", "popmart", "pembecida", "pop", "mart"]
     new_tokens = []
     changed = False
 
@@ -256,21 +404,19 @@ def fix_brand_typo(q: str) -> str:
             r = SequenceMatcher(None, t, k).ratio()
             if r > best_ratio:
                 best_ratio, best_k = r, k
-
         if best_k and len(t) >= 4 and best_ratio >= 0.82:
             new_tokens.append(best_k)
             changed = True
         else:
             new_tokens.append(t)
 
-    return " ".join(new_tokens) if changed else q
+    # "pop mart" birleşik yazım
+    joined = " ".join(new_tokens)
+    joined = joined.replace("pop mart", "popmart")
+    return joined if changed else q
 
 
 def fix_keyword_typo(q: str) -> str:
-    """
-    Seri/keyword typo düzeltme (konservatif).
-    cyrbaby -> crybaby gibi.
-    """
     nq = norm(q)
     if not nq:
         return q
@@ -281,7 +427,7 @@ def fix_keyword_typo(q: str) -> str:
 
     known_kw_single = [
         "crybaby", "labubu", "skullpanda", "hirono", "dimoo", "molly",
-        "pencil", "backpack"
+        "kalem", "kalemkutusu", "canta", "çanta", "sirt", "sırt", "cekcek", "çekçek"
     ]
 
     new_tokens = []
@@ -298,7 +444,6 @@ def fix_keyword_typo(q: str) -> str:
             if r > best_ratio:
                 best_ratio, best_k = r, k
 
-        # cyrbaby/crybby -> crybaby için yeterince katı eşik
         if best_k and best_ratio >= 0.84:
             new_tokens.append(best_k)
             changed = True
@@ -308,49 +453,50 @@ def fix_keyword_typo(q: str) -> str:
     return " ".join(new_tokens) if changed else q
 
 
+# =========================
+# Search
+# =========================
+def simple_search(products, q, k=6):
+    nq = norm(q)
+    if not nq:
+        return []
+
+    tokens = nq.split()
+
+    scored = []
+    for p in products:
+        hay = norm(" ".join([
+            p.get("title", ""),
+            p.get("brand_title", ""),
+            p.get("product_type", ""),
+            p.get("description", ""),
+            p.get("meta_title", ""),
+            p.get("meta_description", ""),
+            p.get("meta_keywords", ""),
+            " ".join(p.get("color_terms", []) or []),
+            p.get("link", ""),
+        ]))
+
+        score = 0
+        score += sum(1 for t in tokens if t in hay)
+
+        # renk niyetini güçlendir (pembe çanta vs)
+        if any(t in ["pembe", "mavi", "siyah", "beyaz", "kirmizi", "kırmızı", "yesil", "yeşil", "lila", "gri"] for t in tokens):
+            score += 2 * sum(1 for t in tokens if t in norm(" ".join(p.get("color_terms", []) or [])))
+
+        if score > 0:
+            # code yeni ürün: hafif bonus (yüksek code daha yeni)
+            score += min(3, safe_int(p.get("code", 0)) // 100000)
+            scored.append((score, p))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in scored[:k]]
+
+
 def fuzzy_typo_suggest(products, q: str, k: int = 3):
     """
-    Genel typo toleransı: ÇOK konservatif.
-    Şüphe varsa hiç önermeyip 'bulamadım' der.
+    Çok konservatif typo toleransı: emin değilse önermesin.
     """
-def clean_llm_answer(text: str) -> str:
-    """
-    LLM bazen ürünleri markdown liste olarak döküyor:
-      [Ürün](https://www.pembecida.com/....) - 1234.00 TRY
-    Biz kartları zaten ayrı bastığımız için bu satırları temizliyoruz.
-    """
-    if not text:
-        return ""
-
-    lines = text.splitlines()
-    out = []
-    for ln in lines:
-        s = ln.strip()
-
-        # Markdown link + pembecida URL + fiyat/Try içeriyorsa -> at
-        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and ("[" in s and "](" in s):
-            # çoğu zaman "- 1234.00 TRY" gibi biter
-            if ("try" in s.lower()) or ("tl" in s.lower()) or ("₺" in s) or ("price" in s.lower()):
-                continue
-            # fiyat olmasa bile ürün linki liste gibi geldiyse yine at
-            if s.startswith("-") or s.startswith("["):
-                continue
-
-        # Düz URL basmışsa da (liste gibi) temizleyelim
-        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and (s.startswith("-") or s.startswith("http")):
-            continue
-
-        out.append(ln)
-
-    cleaned = "\n".join(out).strip()
-
-    # Çok kısa kaldıysa güvenli bir karşılama koy
-    if len(cleaned) < 20:
-        cleaned = "Size uygun birkaç öneri çıkardım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daraltayım."
-
-    return cleaned
-    
-    
     nq = norm(q)
     if not nq or len(nq) < 3:
         return []
@@ -361,6 +507,7 @@ def clean_llm_answer(text: str) -> str:
             p.get("title", ""),
             p.get("brand_title", ""),
             p.get("product_type", ""),
+            " ".join(p.get("color_terms", []) or []),
         ]))
         if not hay:
             continue
@@ -374,7 +521,6 @@ def clean_llm_answer(text: str) -> str:
     best_score, best_p = scored[0]
     second_score = scored[1][0] if len(scored) > 1 else 0.0
 
-    # Çok katı eşik: güven yoksa önerme
     if best_score >= 0.88 and (best_score - second_score) >= 0.04:
         out = [best_p]
         for s, p in scored[1:]:
@@ -387,10 +533,12 @@ def clean_llm_answer(text: str) -> str:
     return []
 
 
-# ---------- API ----------
+# =========================
+# API Endpoints
+# =========================
 @app.get("/pb-chat/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "feed": bool(FEED_URL)}
 
 
 @app.get("/pb-chat/reindex")
@@ -418,11 +566,13 @@ def debug_fields(limit: int = 5):
     for p in products[:limit]:
         rows.append({
             "id": p.get("id"),
+            "code": p.get("code"),
             "brand": p.get("brand"),
             "title": p.get("title"),
-            "brand_title": p.get("brand_title"),
+            "colors": p.get("color_terms", []),
             "product_type": p.get("product_type"),
             "link": p.get("link"),
+            "image_link": p.get("image_link"),
         })
     return {"count": len(products), "rows": rows}
 
@@ -430,23 +580,17 @@ def debug_fields(limit: int = 5):
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
     products = ensure_products_loaded()
-
-    # Eğer ürün listesi hala yoksa (feed erişilemez vs)
     if not products:
         return {
-            "answer": (
-                "Şu an ürün listesini yükleyemedim. Lütfen biraz sonra tekrar dener misiniz?"
-            ),
+            "answer": "Şu an ürün listesini yükleyemedim. Lütfen biraz sonra tekrar dener misiniz?",
             "products": []
         }
 
-    # 1) brand + keyword typo düzelt
     q_fixed = fix_brand_typo(inp.query)
     q_fixed = fix_keyword_typo(q_fixed)
 
     hits = simple_search(products, q_fixed, k=6)
 
-    # 2) Hala yoksa konservatif fuzzy
     if not hits:
         typo_hits = fuzzy_typo_suggest(products, inp.query, k=3)
         if typo_hits:
@@ -463,7 +607,6 @@ def chat(inp: ChatIn):
 
     top = hits[:5]
 
-    # UI kartları (widget)
     ui_products = []
     for p in top:
         url = add_utm(p.get("link") or "")
@@ -475,21 +618,21 @@ def chat(inp: ChatIn):
             "image": p.get("image_link") or "",
         })
 
-    # OpenAI yoksa bile UI çalışsın
+    # OpenAI yoksa da çalışsın
     if not client:
         return {
-            "answer": "Size uygun birkaç öneri hazırladım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daha da daraltayım.",
+            "answer": "Size uygun birkaç öneri çıkardım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daraltayım.",
             "products": ui_products
         }
 
-    # LLM'e sadece bulunan ürünleri veriyoruz (hallucination engeli)
     safe_products = [
         {
             "title": (p.get("brand_title") or "").strip(),
             "price": ((p.get("sale_price") or p.get("price") or "")).strip(),
             "link": add_utm((p.get("link") or "").strip()),
             "product_type": (p.get("product_type") or "").strip(),
-            "brand": (p.get("brand") or "").strip(),
+            "colors": (p.get("color_terms") or []),
+            "code": p.get("code", 0),
         }
         for p in top
     ]
@@ -506,7 +649,7 @@ def chat(inp: ChatIn):
     user_payload = {
         "query": inp.query,
         "products": safe_products,
-        "ui_note": "Ürünleri metin olarak listeleme; kartlar ayrı gösterilecek."
+        "note": "Ürünleri asla metinle listeleme; sadece kısa karşılama yaz. Kartlar ayrıca gösterilecek."
     }
 
     resp = client.responses.create(
@@ -680,6 +823,3 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
-
-
-
