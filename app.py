@@ -75,36 +75,86 @@ def fetch_and_index_feed() -> int:
     if not FEED_URL:
         raise RuntimeError("FEED_URL env is missing")
 
-    r = requests.get(FEED_URL, timeout=90)
+    r = requests.get(FEED_URL, timeout=120)
     r.raise_for_status()
 
     xml = etree.fromstring(r.content)
     ns = {"g": "http://base.google.com/ns/1.0"}
-    items = xml.findall(".//item")
+
+    # 1) Önce en yaygın düğümleri dene
+    items = xml.findall(".//item")  # Google Shopping / RSS benzeri
+    if not items:
+        # T-Soft / custom XML varyasyonları
+        candidates = [".//Urun", ".//urun", ".//Product", ".//product", ".//products/*", ".//Items/*"]
+        for path in candidates:
+            items = xml.findall(path)
+            if items:
+                break
+
+    def find_text(node, tag_names):
+        """Birden fazla olası tag adından ilk dolu olanı bulur (namespace'li ve namespacesiz)."""
+        for t in tag_names:
+            # google namespace dene
+            el = node.find(f"g:{t}", namespaces=ns)
+            if el is not None and (el.text or "").strip():
+                return (el.text or "").strip()
+
+            # namespacesiz
+            el2 = node.find(t)
+            if el2 is not None and (el2.text or "").strip():
+                return (el2.text or "").strip()
+
+            # bazı XML’lerde tag’ler nested/uppercase olabilir, geniş arama:
+            el3 = node.find(f".//{t}")
+            if el3 is not None and (el3.text or "").strip():
+                return (el3.text or "").strip()
+
+        return ""
+
+    def find_all_texts(node, tag_names):
+        out = []
+        for t in tag_names:
+            # namespace'li
+            for el in node.findall(f"g:{t}", namespaces=ns):
+                tx = (el.text or "").strip()
+                if tx:
+                    out.append(tx)
+            # namespacesiz
+            for el in node.findall(t):
+                tx = (el.text or "").strip()
+                if tx:
+                    out.append(tx)
+            # geniş
+            for el in node.findall(f".//{t}"):
+                tx = (el.text or "").strip()
+                if tx:
+                    out.append(tx)
+        # unique koru, sırayı bozma
+        seen = set()
+        uniq = []
+        for x in out:
+            if x not in seen:
+                uniq.append(x)
+                seen.add(x)
+        return uniq
 
     products = []
     for it in items:
-        def get(tag):
-            el = it.find(f"g:{tag}", namespaces=ns)
-            if el is not None and (el.text or "").strip():
-                return (el.text or "").strip()
-            el2 = it.find(tag)
-            if el2 is not None and (el2.text or "").strip():
-                return (el2.text or "").strip()
-            return ""
+        pid = find_text(it, ["id", "ID", "UrunID", "urun_id", "ProductId", "product_id", "StokKodu", "ModelKodu", "webserviskodu"])
+        title = find_text(it, ["title", "Title", "Baslik", "Ad", "UrunAdi", "name"])
+        brand = find_text(it, ["brand", "Brand", "Marka", "brand_name"])
+        link = find_text(it, ["link", "Link", "Url", "url", "SeoLink", "TamLink", "Dislink", "ProductUrl"])
+        price = find_text(it, ["price", "Price", "Fiyat", "SatisFiyati", "satisfiyati", "sale_price", "SalePrice"])
+        sale_price = find_text(it, ["sale_price", "SalePrice", "IndirimliFiyat", "KampanyaFiyati"])
+        product_type = find_text(it, ["product_type", "ProductType", "Kategori", "Category", "category_path", "KategoriYolu"])
+        image = find_text(it, ["image_link", "image", "Image", "Resim", "MainImage", "AnaResim", "image_url"])
 
-        pid = get("id")
-        title = get("title")
-        brand = get("brand")
-        link = get("link")
-        price = get("price")
-        sale_price = get("sale_price")
-        product_type = get("product_type")
-        image = get("image_link")
+        add_imgs = find_all_texts(it, ["additional_image_link", "AdditionalImage", "Resim", "Images", "image", "Image"])
 
-        add_imgs = [(el.text or "").strip() for el in it.findall("g:additional_image_link", namespaces=ns)]
-        if not add_imgs:
-            add_imgs = [(el.text or "").strip() for el in it.findall("additional_image_link")]
+        # minimum alanlar
+        if not pid:
+            # bazı feedlerde id attribute olarak gelir: <Urun id="123">
+            pid = (it.get("id") or it.get("ID") or "").strip()
 
         if not pid or not link:
             continue
@@ -124,6 +174,7 @@ def fetch_and_index_feed() -> int:
 
     save_products(products)
     return len(products)
+
 
 
 def ensure_products_loaded():
@@ -629,5 +680,6 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
