@@ -228,7 +228,6 @@ def chat(inp: ChatIn):
     "İlk yanıtta ürünlerin orijinal olduğunu belirt. "
     "Bazı yazılmalarda İstanbul Zorlu Center mağazası olduğunu belirt ve özellikle orijinal olup olmadığı gibi bir soru gelirse mağazada görebileceğini söyle."
     "Eğer Pop Mart markalı Bling Box/sürpriz kutu ürünü soruluyorsa ürünlerin değişim veya iade alınamayacağını yaz."
-    "eğer arama içerisinde typo var ise en yakın ürüne yönlendir veya küçük bir süphen var ise bile ürünü bulamadığınız söyle."
     "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular . "
     "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA. "
     "ÇIKTI KURALI: SADECE 2-3 cümlelik kısa bir karşılama ve yönlendirme yaz. "
@@ -432,6 +431,7 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
 
