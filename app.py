@@ -466,7 +466,8 @@ def chat(inp: ChatIn):
         ],
     )
 
-    return {"answer": resp.output_text, "products": ui_products}
+    answer = clean_llm_answer(resp.output_text)
+    return {"answer": answer, "products": ui_products}
 
 
 @app.get("/pb-chat/widget.js")
@@ -628,4 +629,5 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
