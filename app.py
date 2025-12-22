@@ -197,7 +197,8 @@ def chat(inp: ChatIn):
         "answer": (
             'Bu aramada eşleşen ürün bulamadım. '
             'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
-            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular" target="_blank" rel="noopener">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
+            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a>
+ sayfamızı inceleyebilirsiniz.'
         ),
         "products": []
         }
@@ -366,7 +367,20 @@ def widget():
     return products.map(p => {
       const title = escapeHtml(p.title || "");
       const price = escapeHtml(p.price || "");
-      const link = p.link || "#";
+      const addUtm = (url) => {
+          try {
+            const u = new URL(url, location.origin);
+            u.searchParams.set("utm_source", "pembegpt");
+            u.searchParams.set("utm_medium", "chatbot");
+            u.searchParams.set("utm_campaign", "pembecida");
+            return u.toString();
+          } catch {
+            return url;
+          }
+        };
+
+        const link = addUtm(p.link || "#");
+
       const img = p.image || "";
       return `
         <div style="display:flex;gap:10px;padding:10px;border:1px solid #eee;border-radius:12px;margin-top:10px;">
@@ -374,7 +388,7 @@ def widget():
           <div style="flex:1;min-width:0;">
             <div style="font-weight:600;font-size:14px;line-height:1.25;margin-bottom:4px;">${title}</div>
             ${price ? `<div style="font-size:13px;color:#333;margin-bottom:8px;">${price}</div>` : ``}
-            <a href="${link}" target="_blank" rel="noopener"
+            <a href="${link}"
                style="display:inline-block;text-decoration:none;padding:8px 10px;border-radius:10px;border:1px solid #ddd;font-size:13px;">
               Ürünü İncele
             </a>
@@ -416,3 +430,4 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
