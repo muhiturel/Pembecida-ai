@@ -262,6 +262,44 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
     Genel typo toleransı: ÇOK konservatif.
     Şüphe varsa hiç önermeyip 'bulamadım' der.
     """
+def clean_llm_answer(text: str) -> str:
+    """
+    LLM bazen ürünleri markdown liste olarak döküyor:
+      [Ürün](https://www.pembecida.com/....) - 1234.00 TRY
+    Biz kartları zaten ayrı bastığımız için bu satırları temizliyoruz.
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    out = []
+    for ln in lines:
+        s = ln.strip()
+
+        # Markdown link + pembecida URL + fiyat/Try içeriyorsa -> at
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and ("[" in s and "](" in s):
+            # çoğu zaman "- 1234.00 TRY" gibi biter
+            if ("try" in s.lower()) or ("tl" in s.lower()) or ("₺" in s) or ("price" in s.lower()):
+                continue
+            # fiyat olmasa bile ürün linki liste gibi geldiyse yine at
+            if s.startswith("-") or s.startswith("["):
+                continue
+
+        # Düz URL basmışsa da (liste gibi) temizleyelim
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and (s.startswith("-") or s.startswith("http")):
+            continue
+
+        out.append(ln)
+
+    cleaned = "\n".join(out).strip()
+
+    # Çok kısa kaldıysa güvenli bir karşılama koy
+    if len(cleaned) < 20:
+        cleaned = "Size uygun birkaç öneri çıkardım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daraltayım."
+
+    return cleaned
+    
+    
     nq = norm(q)
     if not nq or len(nq) < 3:
         return []
@@ -590,3 +628,4 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
