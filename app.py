@@ -186,7 +186,52 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
             if s >= 0.86:
                 out.append(p)
         return out
+    
+    # brand typo düzeltme başla
+    def fix_brand_typo(q: str) -> str:
+    """
+    Kısa/tek kelime typo'larda marka düzeltme (çok konservatif).
+    Örn: smgle -> smiggle
+    """
+    nq = norm(q)
+    if not nq:
+        return q
 
+    tokens = nq.split()
+
+    # Sadece kısa/az token'lı sorgularda çalışsın (risk azaltma)
+    if len(tokens) > 3:
+        return q
+
+    known = ["smiggle", "pop mart", "popmart", "pembecida"]
+    # Token bazlı karşılaştırma
+    new_tokens = []
+    changed = False
+
+    for t in tokens:
+        best = (0.0, None)
+        for k in known:
+            # Çok kelimeli marka için (pop mart) token'ı birleştirmeye çalışmayalım;
+            # burada kısa token'larda asıl hedef "smiggle" gibi tek kelime.
+            if " " in k:
+                continue
+            r = SequenceMatcher(None, t, k).ratio()
+            if r > best[0]:
+                best = (r, k)
+
+        # Kısa token için daha düşük ama halen katı eşik
+        # smgle vs smiggle ~ 0.83-0.86 aralığına gelir
+        if best[1] and best[0] >= 0.82 and len(t) >= 4:
+            new_tokens.append(best[1])
+            changed = True
+        else:
+            new_tokens.append(t)
+
+    if changed:
+        return " ".join(new_tokens)
+    return q
+    # brand typo düzeltme son
+    
     # Şüphe varsa: hiçbir şey döndürme
     return []
 # smiple search içerisine fuzzytypo_suggest ekleme sonu
@@ -243,22 +288,25 @@ def chat(inp: ChatIn):
             pass
         products = load_products()
 
-    hits = simple_search(products, inp.query, k=6)
+    # 1) brand typo düzelt (smgle -> smiggle gibi)
+    q_fixed = fix_brand_typo(inp.query)
 
-# 1) Normal arama bulamadıysa, konservatif typo önerisi dene
+    hits = simple_search(products, q_fixed, k=6)
+
+    # 2) hala yoksa, konservatif genel typo önerisi dene
     if not hits:
         typo_hits = fuzzy_typo_suggest(products, inp.query, k=3)
-        if typo_hits:
-            hits = typo_hits  # devamında normal ürün kartları akışı çalışacak
-        else:
-            return {
-                "answer": (
-                    'Bu aramada eşleşen ürün bulamadım. '
-                    'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
-                    'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
-                ),
-                "products": []
-            }
+    if typo_hits:
+        hits = typo_hits
+    else:
+        return {
+            "answer": (
+                'Bu aramada eşleşen ürün bulamadım. '
+                'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
+                'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
+            ),
+            "products": []
+        }
 
     top = hits[:5]
     ui_products = []
@@ -489,6 +537,7 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
 
