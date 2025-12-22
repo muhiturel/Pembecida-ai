@@ -138,6 +138,59 @@ def simple_search(products, q, k=6):
     scored.sort(key=lambda x: x[0], reverse=True)
     return [p for _, p in scored[:k]]
 
+# smiple search içerisine fuzzytypo_suggest ekleme başı
+from difflib import SequenceMatcher
+
+def fuzzy_typo_suggest(products, q: str, k: int = 3):
+    """
+    Çok konservatif typo düzeltme:
+    - Sadece çok yüksek benzerlikte öneri döner
+    - Tek ve net kazanan yoksa boş döner
+    """
+    nq = norm(q)
+    if not nq or len(nq) < 3:
+        return []
+
+    scored = []
+    for p in products:
+        hay = norm(" ".join([
+            p.get("title", ""),
+            p.get("brand_title", ""),
+            p.get("product_type", ""),
+        ]))
+        if not hay:
+            continue
+
+        # SequenceMatcher 0..1 arası benzerlik döner
+        r = SequenceMatcher(None, nq, hay).ratio()
+        scored.append((r, p))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    best_score, best_p = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    # ✅ Çok katı eşik: typo ise ancak gerçekten çok yakınsa öner
+    # - best >= 0.88 (yüksek benzerlik)
+    # - best ile second arasında en az 0.04 fark olsun (tek net kazanan)
+    if best_score >= 0.88 and (best_score - second_score) >= 0.04:
+        # benzer birkaç ürünü de göstermek için en üsttekilerden filtreleyebiliriz
+        out = [best_p]
+        # İstersen 2-3 tane daha ekleyelim ama benzerlik eşiği yüksek kalsın
+        for s, p in scored[1:]:
+            if len(out) >= k:
+                break
+            if s >= 0.86:
+                out.append(p)
+        return out
+
+    # Şüphe varsa: hiçbir şey döndürme
+    return []
+# smiple search içerisine fuzzytypo_suggest ekleme sonu
+
 @app.get("/pb-chat/health")
 def health():
     return {"ok": True}
@@ -192,15 +245,20 @@ def chat(inp: ChatIn):
 
     hits = simple_search(products, inp.query, k=6)
 
+# 1) Normal arama bulamadıysa, konservatif typo önerisi dene
     if not hits:
-        return {
-        "answer": (
-            'Bu aramada eşleşen ürün bulamadım. '
-            'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
-            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
-        ),
-        "products": []
-        }
+        typo_hits = fuzzy_typo_suggest(products, inp.query, k=3)
+        if typo_hits:
+            hits = typo_hits  # devamında normal ürün kartları akışı çalışacak
+        else:
+            return {
+                "answer": (
+                    'Bu aramada eşleşen ürün bulamadım. '
+                    'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
+                    'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
+                ),
+                "products": []
+            }
 
     top = hits[:5]
     ui_products = []
@@ -431,6 +489,7 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
 
