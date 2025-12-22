@@ -189,27 +189,27 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
     
     # brand typo düzeltme başla
     def fix_brand_typo(q: str) -> str:
-    """
-    Kısa/tek kelime typo'larda marka düzeltme (çok konservatif).
-    Örn: smgle -> smiggle
-    """
-    nq = norm(q)
-    if not nq:
-        return q
+        """
+        Kısa/tek kelime typo'larda marka düzeltme (çok konservatif).
+        Örn: smgle -> smiggle
+        """
+        nq = norm(q)
+        if not nq:
+            return q
 
-    tokens = nq.split()
+        tokens = nq.split()
 
     # Sadece kısa/az token'lı sorgularda çalışsın (risk azaltma)
-    if len(tokens) > 3:
-        return q
+        if len(tokens) > 3:
+            return q
 
-    known = ["smiggle", "pop mart", "popmart", "pembecida"]
+        known = ["smiggle", "pop mart", "popmart", "pembecida"]
     # Token bazlı karşılaştırma
-    new_tokens = []
-    changed = False
+        new_tokens = []
+        changed = False
 
-    for t in tokens:
-        best = (0.0, None)
+        for t in tokens:
+            best = (0.0, None)
         for k in known:
             # Çok kelimeli marka için (pop mart) token'ı birleştirmeye çalışmayalım;
             # burada kısa token'larda asıl hedef "smiggle" gibi tek kelime.
@@ -227,10 +227,10 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
         else:
             new_tokens.append(t)
 
-    if changed:
-        return " ".join(new_tokens)
-    return q
-    # brand typo düzeltme son
+        if changed:
+            return " ".join(new_tokens)
+        return q
+        # brand typo düzeltme son
     
     # Şüphe varsa: hiçbir şey döndürme
     return []
@@ -537,6 +537,7 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
 
 
