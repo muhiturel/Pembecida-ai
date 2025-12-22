@@ -255,35 +255,32 @@ def widget():
 (() => {
   const API_BASE = "https://pembecida-ai.onrender.com";
 
-  const btn = document.createElement("button");
+  // Wrapper (animasyonlu halo için)
+const btnWrap = document.createElement("div");
+btnWrap.className = "pb-gpt-wrap";
+
+const btn = document.createElement("button");
+    btn.className = "pb-gpt-btn";
     btn.innerText = "PembeGPT";
 
-// Instagram benzeri pembe→turuncu degrade (şeker pembesi → turuncu)
     btn.style.cssText = `
-      position:fixed;
-      right:16px;
-      bottom:16px;
-      z-index:99999;
-      border: 3px solid #fff;
-
-  /* 2 kat büyütme */
+      position:relative;
       padding:20px 28px;
       font-size:18px;
-
       border-radius:999px;
       border:0;
       cursor:pointer;
 
-  /* degrade + yazı */
-      background: linear-gradient(45deg, #feda75, #fa7e1e, #d62976);
+      background: linear-gradient(45deg, #ff5db1, #ff7a00);
       color:#fff;
       font-weight:800;
 
       box-shadow: 0 10px 22px rgba(0,0,0,.18);
-`    ;
+      z-index:2;
+    `;
 
-document.body.appendChild(btn);
-
+    btnWrap.appendChild(btn);
+    document.body.appendChild(btnWrap);
 
   const box = document.createElement("div");
   box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:99999;width:340px;max-width:calc(100vw - 32px);height:520px;background:#fff;border:3px solid #9EA3A8;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
@@ -316,7 +313,36 @@ style.innerHTML = `
     transform-origin: center bottom !important;
   }
 }
-`;
+/* PembeGPT animasyonlu halo */
+    .pb-gpt-wrap {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 99998;
+    }
+
+    .pb-gpt-wrap::before {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border-radius: 999px;
+      background: linear-gradient(
+        45deg,
+        #ff5db1,
+        #ff7a00,
+        #ff5db1
+      );
+      filter: blur(6px);
+      opacity: 0.9;
+      animation: pbGlow 2.6s linear infinite;
+      z-index: 1;
+    }
+
+    @keyframes pbGlow {
+      0%   { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    ;
 document.head.appendChild(style);
 
 // butona class veriyoruz ki media query hedeflesin
@@ -399,6 +425,7 @@ btn.classList.add("pb-gpt-btn");
 """.strip()
 
     return Response(js, media_type="application/javascript")
+
 
 
 
