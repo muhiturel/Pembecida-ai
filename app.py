@@ -251,39 +251,85 @@ def chat(inp: ChatIn):
 
 @app.get("/pb-chat/widget.js")
 def widget():
-    js = """
+    js = r"""
 (() => {
   const API_BASE = "https://pembecida-ai.onrender.com";
 
-  // Wrapper (animasyonlu halo için)
-const btnWrap = document.createElement("div");
-btnWrap.className = "pb-gpt-wrap";
+  // ---- Styles (link + button ring + mobile rules)
+  const style = document.createElement("style");
+  style.innerHTML = `
+    #pb_msgs a { color:#0645AD; text-decoration:underline; }
+    #pb_msgs a:visited { color:#0b0080; }
 
-const btn = document.createElement("button");
-    btn.className = "pb-gpt-btn";
-    btn.innerText = "PembeGPT";
+    /* Wrapper: fixed container for the button */
+    .pb-gpt-wrap{
+      position:fixed;
+      right:16px;
+      bottom:16px;
+      z-index:99999;
+    }
 
-    btn.style.cssText = `
+    /* Animated gradient ring */
+    .pb-gpt-wrap::before{
+      content:"";
+      position:absolute;
+      inset:-7px;
+      border-radius:999px;
+      background: linear-gradient(45deg, #ff5db1, #ff7a00, #ff5db1);
+      filter: blur(7px);
+      opacity: .95;
+      animation: pbGlow 2.6s linear infinite;
+      z-index:1;
+      pointer-events:none;
+    }
+
+    @keyframes pbGlow{
+      0%{ transform: rotate(0deg); }
+      100%{ transform: rotate(360deg); }
+    }
+
+    /* Button itself */
+    .pb-gpt-btn{
       position:relative;
-      padding:20px 28px;
+      z-index:2;
+      padding:20px 28px;          /* ~2x feel */
       font-size:18px;
       border-radius:999px;
       border:0;
       cursor:pointer;
-
       background: linear-gradient(45deg, #ff5db1, #ff7a00);
       color:#fff;
       font-weight:800;
-
       box-shadow: 0 10px 22px rgba(0,0,0,.18);
-      z-index:2;
-    `;
+      -webkit-tap-highlight-color: transparent;
+    }
 
-    btnWrap.appendChild(btn);
-    document.body.appendChild(btnWrap);
+    /* Mobile: center horizontally + scale to 1.7 instead of 2.0 => 0.85 */
+    @media (max-width: 480px){
+      .pb-gpt-wrap{
+        left:50%;
+        right:auto;
+        transform: translateX(-50%) scale(0.85);
+        transform-origin: center bottom;
+      }
+    }
+  `;
+  document.head.appendChild(style);
 
+  // ---- Button Wrapper + Button
+  const btnWrap = document.createElement("div");
+  btnWrap.className = "pb-gpt-wrap";
+
+  const btn = document.createElement("button");
+  btn.className = "pb-gpt-btn";
+  btn.innerText = "PembeGPT";
+
+  btnWrap.appendChild(btn);
+  document.body.appendChild(btnWrap);
+
+  // ---- Chat Box
   const box = document.createElement("div");
-  box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:99999;width:340px;max-width:calc(100vw - 32px);height:520px;background:#fff;border:3px solid #9EA3A8;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
+  box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:99999;width:340px;max-width:calc(100vw - 32px);height:520px;background:#fff;border:2px solid #9EA3A8;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
   box.innerHTML = `
     <div style="padding:12px 14px;border-bottom:1px solid #eee;font-weight:600;">Pembecida Asistan</div>
     <div id="pb_msgs" style="padding:10px 14px;height:390px;overflow:auto;font-size:14px;line-height:1.35;"></div>
@@ -291,62 +337,8 @@ const btn = document.createElement("button");
       <input id="pb_in" placeholder="Ne arıyorsunuz? (örn: 8 yaş hediye, Pop Mart, kalem kutusu...)" style="flex:1;padding:10px;border:1px solid #ddd;border-radius:10px;"/>
       <button id="pb_send" style="padding:10px 12px;border-radius:10px;border:0;cursor:pointer;">Gönder</button>
     </div>
-    <div style="padding:8px 14px;font-size:12px;color:#666;border-top:1px solid #f3f3f3;">
-      Ürünler orijinaldir. En güncel bilgi ve fiyat ürün sayfasındadır.
-    </div>
   `;
   document.body.appendChild(box);
-// Linkleri mavi ve altı çizgili göster
-const style = document.createElement("style");
-style.innerHTML = `
-  #pb_msgs a { color: #0645AD; text-decoration: underline; }
-  #pb_msgs a:visited { color: #0b0080; }
-
-  /* Sadece mobilde butonu yatayda ortala */
-  @media (max-width: 480px) {
-  button.pb-gpt-btn {
-    left: 50% !important;
-    right: auto !important;
-
-    /* Mobilde 1.7 ölçek + ortalama */
-    transform: translateX(-50%) scale(0.85) !important;
-    transform-origin: center bottom !important;
-  }
-}
-/* PembeGPT animasyonlu halo */
-    .pb-gpt-wrap {
-      position: fixed;
-      right: 16px;
-      bottom: 16px;
-      z-index: 99998;
-    }
-
-    .pb-gpt-wrap::before {
-      content: "";
-      position: absolute;
-      inset: -6px;
-      border-radius: 999px;
-      background: linear-gradient(
-        45deg,
-        #ff5db1,
-        #ff7a00,
-        #ff5db1
-      );
-      filter: blur(6px);
-      opacity: 0.9;
-      animation: pbGlow 2.6s linear infinite;
-      z-index: 1;
-    }
-
-    @keyframes pbGlow {
-      0%   { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    ;
-document.head.appendChild(style);
-
-// butona class veriyoruz ki media query hedeflesin
-btn.classList.add("pb-gpt-btn");
 
   const msgs = box.querySelector("#pb_msgs");
   const input = box.querySelector("#pb_in");
@@ -409,7 +401,7 @@ btn.classList.add("pb-gpt-btn");
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && (data.detail || data.error)) || ("HTTP " + res.status));
 
-      const answerHtml = (data.answer || "").replace(/\\n/g, "<br/>");
+      const answerHtml = (data.answer || "").replace(/\n/g, "<br/>");
       const cardsHtml = renderProducts(data.products || []);
       msgs.lastChild.querySelector("div:last-child").innerHTML = answerHtml + cardsHtml;
 
@@ -423,15 +415,4 @@ btn.classList.add("pb-gpt-btn");
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") doSend(); });
 })();
 """.strip()
-
     return Response(js, media_type="application/javascript")
-
-
-
-
-
-
-
-
-
-
