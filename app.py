@@ -19,7 +19,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------- Config ----------
 FEED_URL = os.environ.get("FEED_URL", "").strip()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(BASE_DIR, "products.json")
 
@@ -53,7 +55,23 @@ def save_products(products):
         json.dump(products, f, ensure_ascii=False)
 
 
-def fetch_and_index_feed():
+def add_utm(url: str) -> str:
+    """UTM garantisi (backend)."""
+    if not url:
+        return url
+    try:
+        parts = urlparse(url)
+        qs = dict(parse_qsl(parts.query))
+        qs["utm_source"] = "pembegpt"
+        qs["utm_medium"] = "chatbot"
+        qs["utm_campaign"] = "pembecida"
+        new_query = urlencode(qs, doseq=True)
+        return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, new_query, parts.fragment))
+    except Exception:
+        return url
+
+
+def fetch_and_index_feed() -> int:
     if not FEED_URL:
         raise RuntimeError("FEED_URL env is missing")
 
@@ -67,11 +85,9 @@ def fetch_and_index_feed():
     products = []
     for it in items:
         def get(tag):
-            # 1) g:tag
             el = it.find(f"g:{tag}", namespaces=ns)
             if el is not None and (el.text or "").strip():
                 return (el.text or "").strip()
-            # 2) fallback: namespacesiz
             el2 = it.find(tag)
             if el2 is not None and (el2.text or "").strip():
                 return (el2.text or "").strip()
@@ -110,24 +126,21 @@ def fetch_and_index_feed():
     return len(products)
 
 
-def add_utm(url: str) -> str:
-    """
-    Backend tarafında da güvenli UTM ekleyelim (ürün linki / sss vs).
-    """
-    if not url:
-        return url
+def ensure_products_loaded():
+    """Ürünler boşsa otomatik reindex (deploy sonrası products.json sıfırlanabiliyor)."""
+    products = load_products()
+    if products:
+        return products
+
     try:
-        parts = urlparse(url)
-        qs = dict(parse_qsl(parts.query))
-        qs["utm_source"] = "pembegpt"
-        qs["utm_medium"] = "chatbot"
-        qs["utm_campaign"] = "pembecida"
-        new_query = urlencode(qs, doseq=True)
-        return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, new_query, parts.fragment))
+        fetch_and_index_feed()
     except Exception:
-        return url
+        # FEED erişimi vs hata varsa sessiz geç; chat tarafında fallback döner
+        pass
+    return load_products()
 
 
+# ---------- Search ----------
 def simple_search(products, q, k=6):
     nq = norm(q)
     if not nq:
@@ -172,7 +185,7 @@ def simple_search(products, q, k=6):
 def fix_brand_typo(q: str) -> str:
     """
     Kısa typo'larda marka düzeltme (konservatif).
-    Örn: smgle -> smiggle
+    smgle/smigle -> smiggle gibi.
     """
     nq = norm(q)
     if not nq:
@@ -182,7 +195,6 @@ def fix_brand_typo(q: str) -> str:
     if len(tokens) > 3:
         return q
 
-    # tek kelimelik markalar öncelik
     known_single = ["smiggle", "popmart", "pembecida"]
     new_tokens = []
     changed = False
@@ -194,8 +206,49 @@ def fix_brand_typo(q: str) -> str:
             if r > best_ratio:
                 best_ratio, best_k = r, k
 
-        # smgle~smiggle gibi durumlar için eşik
         if best_k and len(t) >= 4 and best_ratio >= 0.82:
+            new_tokens.append(best_k)
+            changed = True
+        else:
+            new_tokens.append(t)
+
+    return " ".join(new_tokens) if changed else q
+
+
+def fix_keyword_typo(q: str) -> str:
+    """
+    Seri/keyword typo düzeltme (konservatif).
+    cyrbaby -> crybaby gibi.
+    """
+    nq = norm(q)
+    if not nq:
+        return q
+
+    tokens = nq.split()
+    if len(tokens) > 4:
+        return q
+
+    known_kw_single = [
+        "crybaby", "labubu", "skullpanda", "hirono", "dimoo", "molly",
+        "pencil", "backpack"
+    ]
+
+    new_tokens = []
+    changed = False
+
+    for t in tokens:
+        if len(t) < 4:
+            new_tokens.append(t)
+            continue
+
+        best_ratio, best_k = 0.0, None
+        for k in known_kw_single:
+            r = SequenceMatcher(None, t, k).ratio()
+            if r > best_ratio:
+                best_ratio, best_k = r, k
+
+        # cyrbaby/crybby -> crybaby için yeterince katı eşik
+        if best_k and best_ratio >= 0.84:
             new_tokens.append(best_k)
             changed = True
         else:
@@ -206,9 +259,8 @@ def fix_brand_typo(q: str) -> str:
 
 def fuzzy_typo_suggest(products, q: str, k: int = 3):
     """
-    Genel typo toleransı: çok konservatif.
-    - best >= 0.88
-    - ikinci ile fark >= 0.04
+    Genel typo toleransı: ÇOK konservatif.
+    Şüphe varsa hiç önermeyip 'bulamadım' der.
     """
     nq = norm(q)
     if not nq or len(nq) < 3:
@@ -223,7 +275,6 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
         ]))
         if not hay:
             continue
-
         r = SequenceMatcher(None, nq, hay).ratio()
         scored.append((r, p))
 
@@ -234,6 +285,7 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
     best_score, best_p = scored[0]
     second_score = scored[1][0] if len(scored) > 1 else 0.0
 
+    # Çok katı eşik: güven yoksa önerme
     if best_score >= 0.88 and (best_score - second_score) >= 0.04:
         out = [best_p]
         for s, p in scored[1:]:
@@ -246,6 +298,7 @@ def fuzzy_typo_suggest(products, q: str, k: int = 3):
     return []
 
 
+# ---------- API ----------
 @app.get("/pb-chat/health")
 def health():
     return {"ok": True}
@@ -265,29 +318,13 @@ def reindex_post():
 
 @app.get("/pb-chat/debug/sample")
 def debug_sample(limit: int = 10):
-    products = load_products()
-    products = load_products()
-    if not products:
-        try:
-            fetch_and_index_feed()
-    except Exception:
-        pass
-    products = load_products()
-
+    products = ensure_products_loaded()
     return {"count": len(products), "sample": products[:limit]}
 
 
 @app.get("/pb-chat/debug/fields")
 def debug_fields(limit: int = 5):
-    products = load_products()
-    products = load_products()
-    if not products:
-        try:
-            fetch_and_index_feed()
-        except Exception:
-            pass
-        products = load_products()
-
+    products = ensure_products_loaded()
     rows = []
     for p in products[:limit]:
         rows.append({
@@ -303,58 +340,24 @@ def debug_fields(limit: int = 5):
 
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
+    products = ensure_products_loaded()
+
+    # Eğer ürün listesi hala yoksa (feed erişilemez vs)
+    if not products:
+        return {
+            "answer": (
+                "Şu an ürün listesini yükleyemedim. Lütfen biraz sonra tekrar dener misiniz?"
+            ),
+            "products": []
+        }
+
+    # 1) brand + keyword typo düzelt
     q_fixed = fix_brand_typo(inp.query)
     q_fixed = fix_keyword_typo(q_fixed)
+
     hits = simple_search(products, q_fixed, k=6)
-    
-    # 0) Ürünler boşsa otomatik reindex (deploy sonrası products.json sıfırlanabiliyor)
-    products = load_products()
-    if not products:
-        try:
-            fetch_and_index_feed()
-        except Exception:
-            pass
-        products = load_products()
 
-    # 1) Önce brand typo düzelt
-    q_fixed = fix_brand_typo(inp.query)
-    hits = simple_search(products, q_fixed, k=6)
-def fix_keyword_typo(q: str) -> str:
-    nq = norm(q)
-    if not nq:
-        return q
-
-    tokens = nq.split()
-    if len(tokens) > 4:
-        return q
-
-    known_kw = ["crybaby", "labubu", "skullpanda", "hirono", "dimoo", "molly", "the monsters", "popmart", "pop mart"]
-    new_tokens = []
-    changed = False
-
-    for t in tokens:
-        if len(t) < 4:
-            new_tokens.append(t)
-            continue
-
-        best_ratio, best_k = 0.0, None
-        for k in known_kw:
-            if " " in k:
-                continue
-            r = SequenceMatcher(None, t, k).ratio()
-            if r > best_ratio:
-                best_ratio, best_k = r, k
-
-        # cyrbaby -> crybaby gibi durumlar için
-        if best_k and best_ratio >= 0.84:
-            new_tokens.append(best_k)
-            changed = True
-        else:
-            new_tokens.append(t)
-
-    return " ".join(new_tokens) if changed else q
-
-    # 2) Hala yoksa konservatif fuzzy dene
+    # 2) Hala yoksa konservatif fuzzy
     if not hits:
         typo_hits = fuzzy_typo_suggest(products, inp.query, k=3)
         if typo_hits:
@@ -383,33 +386,32 @@ def fix_keyword_typo(q: str) -> str:
             "image": p.get("image_link") or "",
         })
 
-    # LLM'e verilecek güvenli liste
-    safe_products = []
-    for p in top:
-        safe_products.append({
-            "title": (p.get("brand_title") or "").strip(),
-            "price": ((p.get("sale_price") or p.get("price") or "")).strip(),
-            "link": add_utm((p.get("link") or "").strip()),
-            "product_type": (p.get("product_type") or "").strip(),
-            "brand": (p.get("brand") or "").strip(),
-        })
-
-    # Eğer OpenAI anahtarı yoksa servis yine çalışsın
+    # OpenAI yoksa bile UI çalışsın
     if not client:
         return {
             "answer": "Size uygun birkaç öneri hazırladım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daha da daraltayım.",
             "products": ui_products
         }
 
+    # LLM'e sadece bulunan ürünleri veriyoruz (hallucination engeli)
+    safe_products = [
+        {
+            "title": (p.get("brand_title") or "").strip(),
+            "price": ((p.get("sale_price") or p.get("price") or "")).strip(),
+            "link": add_utm((p.get("link") or "").strip()),
+            "product_type": (p.get("product_type") or "").strip(),
+            "brand": (p.get("brand") or "").strip(),
+        }
+        for p in top
+    ]
+
     system = (
         "Sen Pembecida'nın site içi ürün asistanısın. Kullanıcıyla SİZ diye konuş, sıcak ve samimi ol. "
-        "Hedef kitle: çocuğunu sevindirmek isteyen ebeveynler. "
         "Kısa cevap ver. "
         "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular . "
         "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA. "
-        "ÇIKTI KURALI: SADECE 2-3 cümlelik kısa bir karşılama ve yönlendirme yaz. "
-        "Ürünleri metin olarak listeleme, link yazma, madde madde ürün yazma. "
-        "Ürün önerileri aşağıda kart olarak gösterilecek."
+        "ÇIKTI KURALI: Sadece 2-3 cümlelik kısa bir karşılama ve yönlendirme yaz. "
+        "Ürünleri metin olarak listeleme; ürünler kart olarak gösterilecek."
     )
 
     user_payload = {
@@ -431,8 +433,6 @@ def fix_keyword_typo(q: str) -> str:
 
 @app.get("/pb-chat/widget.js")
 def widget():
-    # Widget JS senin mevcut sürümün; burada sadece servis ediyoruz.
-    # (Sen zaten bu kısmı çalıştırmıştın.)
     js = r"""
 (() => {
   const API_BASE = "https://pembecida-ai.onrender.com";
@@ -448,6 +448,7 @@ def widget():
       bottom:16px;
       z-index:99999;
     }
+
     .pb-gpt-wrap::before{
       content:"";
       position:absolute;
@@ -460,10 +461,12 @@ def widget():
       z-index:1;
       pointer-events:none;
     }
+
     @keyframes pbGlow{
       0%{ transform: rotate(0deg); }
       100%{ transform: rotate(360deg); }
     }
+
     .pb-gpt-btn{
       position:relative;
       z-index:2;
@@ -478,6 +481,7 @@ def widget():
       box-shadow: 0 10px 22px rgba(0,0,0,.18);
       -webkit-tap-highlight-color: transparent;
     }
+
     @media (max-width: 480px){
       .pb-gpt-wrap{
         left:50%;
@@ -586,4 +590,3 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
-
