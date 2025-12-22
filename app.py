@@ -197,8 +197,7 @@ def chat(inp: ChatIn):
         "answer": (
             'Bu aramada eşleşen ürün bulamadım. '
             'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
-            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a>
- sayfamızı inceleyebilirsiniz.'
+            'İade/kargo gibi konular için <a href="https://www.pembecida.com/sikca-sorulan-sorular?utm_source=pembegpt&utm_medium=chatbot&utm_campaign=pembecida">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
         ),
         "products": []
         }
@@ -430,4 +429,5 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript")
+
 
