@@ -551,11 +551,160 @@ def chat(inp: ChatIn):
 
 @app.get("/pb-chat/widget.js")
 def widget():
-    # Not: widget.js zaten sende ayrı güncellendi; burada sadece servis etmeye devam ediyoruz.
-    # Eğer widget.js'i repo içinde ayrı dosyaya taşırsan burayı güncelleyebiliriz.
-    js = """
-// widget.js endpointi bu repoda özelleştirildiği için burada minimal bırakıldı.
-// Render tarafında mevcut widget.js kodunu kullanmaya devam ediyorsun.
-console.log("pb-chat/widget.js loaded");
+    js = r"""
+(() => {
+  const API_BASE = "https://pembecida-ai.onrender.com";
+
+  const style = document.createElement("style");
+  style.innerHTML = `
+    #pb_msgs a { color:#0645AD; text-decoration:underline; }
+    #pb_msgs a:visited { color:#0b0080; }
+
+    .pb-gpt-wrap{
+      position:fixed;
+      right:16px;
+      bottom:16px;
+      z-index:999999;
+    }
+
+    .pb-gpt-wrap::before{
+      content:"";
+      position:absolute;
+      inset:-7px;
+      border-radius:999px;
+      background: linear-gradient(45deg, #ff5db1, #ff7a00, #ff5db1);
+      filter: blur(7px);
+      opacity: .95;
+      animation: pbGlow 2.6s linear infinite;
+      z-index:1;
+      pointer-events:none;
+    }
+
+    @keyframes pbGlow{
+      0%{ transform: rotate(0deg); }
+      100%{ transform: rotate(360deg); }
+    }
+
+    .pb-gpt-btn{
+      position:relative;
+      z-index:2;
+      padding:20px 28px;
+      font-size:18px;
+      border-radius:999px;
+      border:0;
+      cursor:pointer;
+      background: linear-gradient(45deg, #ff5db1, #ff7a00);
+      color:#fff;
+      font-weight:800;
+      box-shadow: 0 10px 22px rgba(0,0,0,.18);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    @media (max-width: 480px){
+      .pb-gpt-wrap{
+        left:50%;
+        right:auto;
+        transform: translateX(-50%) scale(0.85);
+        transform-origin: center bottom;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+
+  const btnWrap = document.createElement("div");
+  btnWrap.className = "pb-gpt-wrap";
+
+  const btn = document.createElement("button");
+  btn.className = "pb-gpt-btn";
+  btn.innerText = "PembeGPT";
+
+  btnWrap.appendChild(btn);
+  document.body.appendChild(btnWrap);
+
+  const box = document.createElement("div");
+  box.style.cssText = "display:none;position:fixed;right:16px;bottom:64px;z-index:999999;width:340px;max-width:calc(100vw - 32px);height:520px;background:#fff;border:2px solid #9EA3A8;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.12);overflow:hidden;font-family:system-ui;";
+  box.innerHTML = `
+    <div style="padding:12px 14px;border-bottom:1px solid #eee;font-weight:600;">Pembecida Asistan</div>
+    <div id="pb_msgs" style="padding:10px 14px;height:390px;overflow:auto;font-size:14px;line-height:1.35;"></div>
+    <div style="display:flex;gap:8px;padding:10px 10px;border-top:1px solid #eee;">
+      <input id="pb_in" placeholder="Ne arıyorsunuz? (örn: 8 yaş hediye, Pop Mart, kalem kutusu...)" style="flex:1;padding:10px;border:1px solid #ddd;border-radius:10px;"/>
+      <button id="pb_send" style="padding:10px 12px;border-radius:10px;border:0;cursor:pointer;">Gönder</button>
+    </div>
+  `;
+  document.body.appendChild(box);
+
+  const msgs = box.querySelector("#pb_msgs");
+  const input = box.querySelector("#pb_in");
+  const send = box.querySelector("#pb_send");
+
+  const addMsg = (who, text) => {
+    const d = document.createElement("div");
+    d.style.margin = "8px 0";
+    d.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">${who}</div><div>${text}</div>`;
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+  };
+
+  btn.onclick = () => {
+    box.style.display = box.style.display === "none" ? "block" : "none";
+    if (msgs.childElementCount === 0) {
+      addMsg("Pembecida", "Merhaba! Size yardımcı olayım: Ne arıyorsunuz? Örn: “Smiggle kalem kutusu”, “8 yaş hediye”, “Pop Mart blind box”.");
+    }
+  };
+
+  const escapeHtml = (s) => (s || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+  const renderProducts = (products) => {
+    if (!products || !products.length) return "";
+    return products.map(p => {
+      const title = escapeHtml(p.title || "");
+      const price = escapeHtml(p.price || "");
+      const link = p.link || "#";
+      const img = p.image || "";
+      return `
+        <div style="display:flex;gap:10px;padding:10px;border:1px solid #eee;border-radius:12px;margin-top:10px;">
+          ${img ? `<img src="${img}" alt="${title}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #eee;">` : ``}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:14px;line-height:1.25;margin-bottom:4px;">${title}</div>
+            ${price ? `<div style="font-size:13px;color:#333;margin-bottom:8px;">${price}</div>` : ``}
+            <a href="${link}" target="_self" style="display:inline-block;text-decoration:none;padding:8px 10px;border-radius:10px;border:1px solid #ddd;font-size:13px;">
+              Ürünü İncele
+            </a>
+          </div>
+        </div>
+      `;
+    }).join("");
+  };
+
+  const doSend = async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    input.value = "";
+    addMsg("Siz", q);
+    addMsg("Pembecida", "Hemen bakıyorum…");
+
+    try {
+      const res = await fetch(API_BASE + "/pb-chat/chat", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ query: q, page_url: location.href })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && (data.detail || data.error)) || ("HTTP " + res.status));
+
+      const answerHtml = (data.answer || "").replace(/\n/g, "<br/>");
+      const cardsHtml = renderProducts(data.products || []);
+      msgs.lastChild.querySelector("div:last-child").innerHTML = answerHtml + cardsHtml;
+
+    } catch (e) {
+      msgs.lastChild.querySelector("div:last-child").innerHTML =
+        "Şu an bağlantıda bir sorun yaşadım. Lütfen sayfayı yenileyip tekrar dener misiniz? (Hata: " + (e.message || e) + ")";
+    }
+  };
+
+  send.onclick = doSend;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") doSend(); });
+})();
 """.strip()
-    return Response(js, media_type="application/javascript")
+    return Response(js, media_type="application/javascript; charset=utf-8")
