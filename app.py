@@ -1,9 +1,10 @@
 import os
 import re
 import json
-import html
+import html as _html
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+from difflib import SequenceMatcher
 
 import requests
 from lxml import etree
@@ -44,13 +45,16 @@ client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
 
 
 # -----------------------------
-# Helpers
+# Models
 # -----------------------------
 class ChatIn(BaseModel):
     query: str
     page_url: str | None = None
 
 
+# -----------------------------
+# Text helpers
+# -----------------------------
 def norm(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
@@ -60,7 +64,7 @@ def norm(s: str) -> str:
 def strip_html(s: str) -> str:
     s = s or ""
     s = re.sub(r"<[^>]+>", " ", s)
-    s = html.unescape(s)
+    s = _html.unescape(s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -68,10 +72,12 @@ def strip_html(s: str) -> str:
 def safe_text(el: Optional[etree._Element]) -> str:
     if el is None:
         return ""
-    txt = el.text or ""
-    return txt.strip()
+    return (el.text or "").strip()
 
 
+# -----------------------------
+# Storage
+# -----------------------------
 def load_products() -> List[Dict[str, Any]]:
     if not os.path.exists(STORE_PATH):
         return []
@@ -87,6 +93,9 @@ def save_products(products: List[Dict[str, Any]]) -> None:
         json.dump(products, f, ensure_ascii=False)
 
 
+# -----------------------------
+# UTM
+# -----------------------------
 def add_utm(url: str) -> str:
     """UTM ekle. Var olan parametreleri bozmadan ekler/overwrite eder."""
     if not url:
@@ -103,10 +112,11 @@ def add_utm(url: str) -> str:
         return url
 
 
+# -----------------------------
+# Price formatting
+# -----------------------------
 def format_price(p: Dict[str, Any]) -> str:
-    # Yeni XML’de vat_included alanları var: price_special_vat_included / price_list_vat_included
-    # yoksa price_special / price_list kullan
-    cur = (p.get("currency") or "TL").strip()
+    cur = (p.get("currency") or "TL").strip() or "TL"
     candidates = [
         p.get("price_special_vat_included"),
         p.get("price_list_vat_included"),
@@ -125,7 +135,6 @@ def format_price(p: Dict[str, Any]) -> str:
                     continue
                 val = float(s)
             if val > 0:
-                # TL için 2 basamak
                 return f"{val:.2f} {cur}"
         except Exception:
             continue
@@ -139,7 +148,7 @@ def parse_products_from_xml(xml_bytes: bytes) -> List[Dict[str, Any]]:
     """
     Beklenen yapı:
       <product>
-        <code>...</code>
+        <code>...</code>  (sıra no, büyük => yeni)
         <name><![CDATA[...]]></name>
         <product_link><![CDATA[https://...]]></product_link>
         <brand><![CDATA[Smiggle]]></brand>
@@ -151,25 +160,21 @@ def parse_products_from_xml(xml_bytes: bytes) -> List[Dict[str, Any]]:
         <subproducts>
           <subproduct>
             <type1><![CDATA[Lila]]></type1>   # renk
-            ...
           </subproduct>
         </subproducts>
       </product>
     """
     root = etree.fromstring(xml_bytes)
+    out: List[Dict[str, Any]] = []
 
-    products_out: List[Dict[str, Any]] = []
-
-    # Bazı XML’lerde root farklı olabilir; yine de tüm product’ları gez
     for prod in root.findall(".//product"):
-        code = safe_text(prod.find("code"))
+        code = safe_text(prod.find("code"))  # önemli: yenilik sırası
         name = safe_text(prod.find("name"))
         brand = safe_text(prod.find("brand"))
         link = safe_text(prod.find("product_link"))
         category_path = safe_text(prod.find("category_path"))
         model = safe_text(prod.find("model"))
 
-        # fiyatlar
         price_list = safe_text(prod.find("price_list"))
         price_list_vat_included = safe_text(prod.find("price_list_vat_included"))
         price_special = safe_text(prod.find("price_special"))
@@ -181,428 +186,434 @@ def parse_products_from_xml(xml_bytes: bytes) -> List[Dict[str, Any]]:
         seo_title = safe_text(prod.find("seo_title"))
         seo_description = safe_text(prod.find("seo_description"))
 
-        # images
-        images = []
+        images: List[str] = []
         for img in prod.findall(".//images/img_item"):
             t = safe_text(img)
             if t:
                 images.append(t)
 
-        # subproducts / colors(type1)
-        colors = []
-        subproducts = []
+        colors: List[str] = []
         for sp in prod.findall(".//subproducts/subproduct"):
-            sp_code = safe_text(sp.find("code"))
-            sp_ws_code = safe_text(sp.find("ws_code"))
-            sp_type1 = safe_text(sp.find("type1"))  # renk
-            sp_type2 = safe_text(sp.find("type2"))
-            sp_barcode = safe_text(sp.find("barcode"))
-            sp_stock = safe_text(sp.find("stock"))
-            sp_price_list = safe_text(sp.find("price_list"))
-            sp_price_special = safe_text(sp.find("price_special"))
+            c = safe_text(sp.find("type1"))
+            if c:
+                colors.append(c)
 
-            if sp_type1:
-                colors.append(sp_type1)
-
-            subproducts.append(
-                {
-                    "code": sp_code,
-                    "ws_code": sp_ws_code,
-                    "type1": sp_type1,
-                    "type2": sp_type2,
-                    "barcode": sp_barcode,
-                    "stock": sp_stock,
-                    "price_list": sp_price_list,
-                    "price_special": sp_price_special,
-                }
-            )
-
-        # minimum alanlar
+        # Minimum şartlar
         if not link or not name:
             continue
 
-        # index text
-        detail_text = strip_html(detail_html)
-        seo_text = strip_html(seo_title + " " + seo_description)
+        # Arama metni
+        detail_txt = strip_html(detail_html)
+        search_text = norm(" ".join([
+            name,
+            brand,
+            category_path,
+            model,
+            " ".join(colors),
+            seo_title,
+            seo_description,
+            detail_txt
+        ]))
 
-        # Linke UTM ekle (index’te ve widget kartlarında tek kaynak olsun)
-        link_utm = add_utm(link)
-
-        products_out.append(
-            {
-                "code": code,  # senin dediğin: büyükse daha yeni
-                "name": name,
-                "brand": brand,
-                "brand_name": f"{brand} {name}".strip(),
-                "product_link": link_utm,
-                "category_path": category_path,
-                "model": model,
-                "stock": stock,
-                "currency": currency or "TL",
-                "price_list": price_list,
-                "price_list_vat_included": price_list_vat_included,
-                "price_special": price_special,
-                "price_special_vat_included": price_special_vat_included,
-                "images": images,
-                "colors": list(dict.fromkeys([c.strip() for c in colors if c.strip()])),
-                "subproducts": subproducts,
-                "detail": detail_html,
-                "seo_title": seo_title,
-                "seo_description": seo_description,
-                "search_text": norm(
-                    " ".join(
-                        [
-                            name,
-                            brand,
-                            category_path,
-                            model,
-                            " ".join(colors),
-                            detail_text,
-                            seo_text,
-                            link,
-                        ]
-                    )
-                ),
-            }
-        )
-
-    # code büyük olan daha yeni: büyükten küçüğe sırala
-    def code_int(x: Dict[str, Any]) -> int:
+        # code int
         try:
-            return int(str(x.get("code") or "0").strip())
+            code_i = int(re.sub(r"\D+", "", code) or "0")
         except Exception:
-            return 0
+            code_i = 0
 
-    products_out.sort(key=code_int, reverse=True)
-    return products_out
+        p = {
+            "id": code or link,              # stabil id
+            "code": code_i,                  # yenilik sırası
+            "name": name,
+            "brand": brand,
+            "brand_name": f"{brand} {name}".strip(),
+            "product_link": link,
+            "category_path": category_path,
+            "model": model,
+            "currency": currency or "TL",
+            "stock": stock,
+            "price_list": price_list,
+            "price_list_vat_included": price_list_vat_included,
+            "price_special": price_special,
+            "price_special_vat_included": price_special_vat_included,
+            "images": images,
+            "colors": list(dict.fromkeys([c.strip() for c in colors if c.strip()])),
+            "seo_title": seo_title,
+            "seo_description": seo_description,
+            "detail_text": detail_txt,
+            "search_text": search_text,
+        }
+        out.append(p)
+
+    # “en yeni” = code büyük
+    out.sort(key=lambda x: x.get("code", 0), reverse=True)
+    return out
 
 
-def fetch_and_index_feed() -> Tuple[bool, int, str]:
+def fetch_and_index_feed() -> int:
     if not FEED_URL:
         save_products([])
-        return False, 0, "FEED_URL boş"
+        return 0
 
     r = requests.get(FEED_URL, timeout=120)
     r.raise_for_status()
-
     products = parse_products_from_xml(r.content)
     save_products(products)
-    return True, len(products), "OK"
+    return len(products)
 
 
 # -----------------------------
-# Search (token + color + typo)
+# Search
 # -----------------------------
-COLOR_HINTS = {
-    "pembe": ["pembe", "pink"],
-    "mor": ["mor", "purple"],
-    "mavi": ["mavi", "blue"],
-    "lacivert": ["lacivert", "navy"],
+COLOR_HINTS: Dict[str, List[str]] = {
+    "pembe": ["pembe", "pink", "fuşya", "fuchsia"],
     "siyah": ["siyah", "black"],
     "beyaz": ["beyaz", "white"],
+    "mavi": ["mavi", "blue", "lacivert", "navy"],
+    "mor": ["mor", "purple", "lila", "lavanta"],
     "kırmızı": ["kırmızı", "kirmizi", "red"],
     "yeşil": ["yeşil", "yesil", "green"],
-    "lila": ["lila", "lilac"],
-    "mint": ["mint"],
-    "gold": ["gold", "altın", "altin"],
+    "turuncu": ["turuncu", "orange"],
+    "sarı": ["sarı", "sari", "yellow"],
 }
 
-INTENT_MAP = {
-    "kalem_kutusu": ["kalem kutusu", "kalemkutusu", "pencil case", "case"],
-    "sirt_cantasi": ["sırt çantası", "sirt cantasi", "backpack", "okul çantası", "okul cantasi"],
-    "cekcekli": ["çekçekli", "cekcekli", "trolley"],
-    "beslenme": ["beslenme çantası", "beslenme cantasi", "lunch bag", "lunchbox"],
-    "suluk": ["suluk", "matara", "bottle"],
-}
+BAG_KEYWORDS = ["çanta", "canta", "cantası", "cantasi", "sırt", "sirt", "okul", "çekçek", "cekcek", "trolley", "valiz", "beslenme"]
+
+BRAND_KNOWN = ["smiggle", "pop mart", "popmart", "pembecida"]
+
+KEYWORDS_KNOWN = ["crybaby", "labubu", "skullpanda", "hirono", "dimoo", "molly"]
 
 
-def build_vocab(products: List[Dict[str, Any]]) -> List[str]:
-    vocab = set()
-    for p in products:
-        for w in norm(p.get("brand", "")).split():
-            if len(w) >= 4:
-                vocab.add(w)
-        for w in norm(p.get("name", "")).split():
-            if len(w) >= 4:
-                vocab.add(w)
-        for c in p.get("colors", []) or []:
-            cw = norm(c)
-            if len(cw) >= 3:
-                vocab.add(cw)
-    return sorted(vocab)
+def fix_typo_token(token: str, candidates: List[str], min_ratio: float) -> Tuple[str, bool]:
+    best_ratio = 0.0
+    best = token
+    for c in candidates:
+        r = SequenceMatcher(None, token, c).ratio()
+        if r > best_ratio:
+            best_ratio = r
+            best = c
+    if best != token and best_ratio >= min_ratio:
+        return best, True
+    return token, False
 
 
-def correct_tokens(tokens: List[str], vocab: List[str]) -> Tuple[List[str], List[Tuple[str, str]]]:
+def normalize_query(q: str) -> Tuple[str, List[Tuple[str, str]]]:
     """
-    Basit typo düzeltme:
-    - sadece 4+ harfli tokenlarda dener
-    - difflib ile en yakın eşleşmeyi alır
-    - agresif davranmasın diye cutoff yüksek
+    Konservatif typo düzeltme:
+      smgle/smigle -> smiggle
+      cyrbaby -> crybaby
     """
-    import difflib
-
-    corrected = []
-    changes = []
-    for t in tokens:
-        if len(t) < 4:
-            corrected.append(t)
-            continue
-        m = difflib.get_close_matches(t, vocab, n=1, cutoff=0.86)
-        if m and m[0] != t:
-            corrected.append(m[0])
-            changes.append((t, m[0]))
-        else:
-            corrected.append(t)
-    return corrected, changes
-
-def simple_search(products: List[Dict[str, Any]], q: str, k: int = 8) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     nq = norm(q)
     if not nq:
-        return [], {"used_query": "", "typo": [], "strict": False}
+        return q, []
 
     tokens = nq.split()
-    vocab = build_vocab(products)
-    tokens2, typo_changes = correct_tokens(tokens, vocab)
+    changes: List[Tuple[str, str]] = []
 
-    # Query intent + renk tespiti
-    intent_terms = []
-    has_bag_intent = False
-    has_stationery_intent = False
+    out = []
+    for t in tokens:
+        t2 = t
 
-    # "çanta" niyeti: çanta/cantasi/backpack/trolley/beslenme vb.
-    bag_keywords = ["çanta", "canta", "cantası", "cantasi", "backpack", "trolley", "beslenme", "okul"]
-    if any(t in nq for t in [norm(x) for x in bag_keywords]):
-        has_bag_intent = True
+        # marka adayları
+        t2, changed = fix_typo_token(t2, [norm(x) for x in BRAND_KNOWN], min_ratio=0.84)
+        if changed:
+            changes.append((t, t2))
 
-    # kırtasiye niyeti (isteğe bağlı)
-    stationery_keywords = ["kalem", "kalem kutusu", "kalemkutusu", "defter", "kırtasiye", "kirtasiye"]
-    if any(norm(x) in nq for x in stationery_keywords):
-        has_stationery_intent = True
+        # keyword adayları
+        t3, changed2 = fix_typo_token(t2, [norm(x) for x in KEYWORDS_KNOWN], min_ratio=0.84)
+        if changed2 and t3 != t2:
+            changes.append((t2, t3))
+            t2 = t3
 
-    for terms in INTENT_MAP.values():
-        if any(norm(t) in nq for t in terms):
-            intent_terms += [norm(t) for t in terms]
+        out.append(t2)
 
-    # renk: query’de renk varsa HARD FILTER uygulayacağız
-    color_terms = []
-    for _, terms in COLOR_HINTS.items():
-        if any(norm(t) in nq for t in terms):
-            color_terms += [norm(t) for t in terms]
-    has_color = len(color_terms) > 0
+    return " ".join(out), changes
 
-    def matches_color(p: Dict[str, Any]) -> bool:
-        if not has_color:
-            return True
-        p_colors = norm(" ".join(p.get("colors", []) or []))  # type1 renkler
-        p_name = norm(p.get("name", "") + " " + p.get("brand_name", ""))
-        # renk ürün renklerinde veya adında geçmeli
-        return any(ct in p_colors or ct in p_name for ct in color_terms)
 
-    def matches_kind(p: Dict[str, Any]) -> bool:
-        # Kullanıcı “çanta” arıyorsa çanta olmayanı ele
-        if has_bag_intent:
-            hay = norm(" ".join([
-                p.get("name", ""),
-                p.get("brand_name", ""),
-                p.get("category_path", ""),
-                p.get("model", ""),
-                p.get("product_link", ""),
-            ]))
-            return ("çanta" in hay) or ("canta" in hay) or ("backpack" in hay) or ("trolley" in hay) or ("beslenme" in hay) or ("okul" in hay)
+def detect_color_terms(nq: str) -> List[str]:
+    terms: List[str] = []
+    for _, arr in COLOR_HINTS.items():
+        for t in arr:
+            if norm(t) in nq:
+                terms.append(norm(t))
+    return list(dict.fromkeys(terms))
 
-        # Kullanıcı kırtasiye arıyorsa çanta vb. alakasızı elemek istersen:
-        if has_stationery_intent:
-            hay = norm(" ".join([
-                p.get("name", ""),
-                p.get("brand_name", ""),
-                p.get("category_path", ""),
-            ]))
-            return ("kalem" in hay) or ("kırtasiye" in hay) or ("kirtasiye" in hay)
 
+def has_bag_intent(nq: str) -> bool:
+    return any(norm(k) in nq for k in BAG_KEYWORDS)
+
+
+def matches_color(p: Dict[str, Any], color_terms: List[str]) -> bool:
+    if not color_terms:
         return True
+    p_colors = norm(" ".join(p.get("colors", []) or []))
+    p_name = norm(p.get("brand_name", ""))
+    return any(ct in p_colors or ct in p_name for ct in color_terms)
 
-    # 1) STRICT PASS: renk varsa renge uymayanı + “çanta” varsa çanta olmayanı ELE
+
+def matches_bag(p: Dict[str, Any]) -> bool:
+    hay = norm(" ".join([
+        p.get("name", ""),
+        p.get("brand", ""),
+        p.get("category_path", ""),
+        p.get("model", ""),
+    ]))
+    return any(k in hay for k in [norm(x) for x in BAG_KEYWORDS])
+
+
+def search_products(products: List[Dict[str, Any]], q: str, k: int = 6) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    nq0 = norm(q)
+    nq, changes = normalize_query(q)
+    nq = norm(nq)
+
+    meta = {
+        "used_query": nq,
+        "typo": changes,
+        "color_terms": [],
+        "strict_color": False,
+        "bag_intent": False,
+    }
+
+    if not nq:
+        return [], meta
+
+    color_terms = detect_color_terms(nq)
+    bag_int = has_bag_intent(nq)
+
+    meta["color_terms"] = color_terms
+    meta["strict_color"] = True if color_terms else False
+    meta["bag_intent"] = bag_int
+
+    tokens = nq.split()
+
+    # BRAND-ONLY özel durum: "smiggle" gibi -> o brand’ın en yeni ürünleri
+    if len(tokens) == 1 and tokens[0] in [norm(x) for x in BRAND_KNOWN]:
+        brand_token = tokens[0]
+        # "popmart" -> "pop mart" eşitleme
+        if brand_token == "popmart":
+            brand_token = "pop mart"
+
+        hits = []
+        for p in products:
+            b = norm(p.get("brand", ""))
+            if brand_token in b:
+                hits.append(p)
+            if len(hits) >= k:
+                break
+        return hits, meta
+
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for p in products:
-        if not matches_color(p):
+        # Hard filter: renk varsa renge uymayanı ele
+        if color_terms and not matches_color(p, color_terms):
             continue
-        if not matches_kind(p):
+        # Hard filter: çanta niyeti varsa çanta olmayanı ele
+        if bag_int and not matches_bag(p):
             continue
 
         hay = p.get("search_text", "")
+        if not hay:
+            continue
+
         score = 0
 
-        # token match
-        score += sum(2 for t in tokens2 if t and t in hay)
-        # intent boost
-        score += sum(3 for t in intent_terms if t and t in hay)
-        # color boost (strict zaten filtreledi ama boost dursun)
-        p_colors = norm(" ".join(p.get("colors", []) or []))
-        score += sum(4 for t in color_terms if t and (t in p_colors or t in hay))
+        # token eşleşmesi
+        for t in tokens:
+            if t and t in hay:
+                score += 2
 
         # brand boost
         b = norm(p.get("brand", ""))
-        score += 2 if b and b in nq else 0
+        if b and b in nq:
+            score += 3
+
+        # renk boost (zaten filtreledi ama sıralama için)
+        if color_terms:
+            p_colors = norm(" ".join(p.get("colors", []) or []))
+            score += 4 * sum(1 for ct in color_terms if ct in p_colors or ct in hay)
+
+        # yenilik boost (code büyük = yeni)
+        score += 1 if p.get("code", 0) > 0 else 0
 
         if score > 0:
             scored.append((score, p))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (x[0], x[1].get("code", 0)), reverse=True)
     hits = [p for _, p in scored[:k]]
 
-    meta = {
-        "used_query": " ".join(tokens2),
-        "typo": typo_changes,
-        "strict": True,
-        "has_color": has_color,
-        "has_bag_intent": has_bag_intent,
-        "color_terms": color_terms,
-    }
-
-    # 2) Eğer kullanıcı renk yazdı ama hiç sonuç yoksa:
-    #    Yanlış ürün göstermeyelim → boş dönelim (UI “bulamadım” gösterecek)
-    if has_color and len(hits) == 0:
-        return [], meta
-
+    # Eğer renkli arama yaptı ve hiç yoksa: “bulamadım” dönmek doğru (alakasız göstermeyelim)
     return hits, meta
 
 
 # -----------------------------
-# API routes
+# LLM answer cleanup (kartlar ayrı gösterilecek)
+# -----------------------------
+def clean_llm_answer(text: str) -> str:
+    """
+    LLM bazen ürün linklerini markdown liste olarak döküyor.
+    Kartlar zaten ayrı basıldığı için ürün liste satırlarını temizler.
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    out: List[str] = []
+    for ln in lines:
+        s = ln.strip()
+        # Markdown ürün listelerini temizle
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and ("[" in s and "](" in s):
+            if s.startswith("-") or s.startswith("["):
+                continue
+        if ("https://www.pembecida.com/" in s or "https://pembecida.com/" in s) and (s.startswith("-") or s.startswith("http")):
+            continue
+        out.append(ln)
+
+    cleaned = "\n".join(out).strip()
+    if len(cleaned) < 20:
+        cleaned = "Size uygun birkaç öneri çıkardım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daraltayım."
+    return cleaned
+
+
+# -----------------------------
+# API
 # -----------------------------
 @app.get("/pb-chat/health")
 def health():
-    products = load_products()
-    return {"ok": True, "feed_configured": bool(FEED_URL), "count": len(products)}
+    return {"ok": True, "feed": bool(FEED_URL)}
 
 
 @app.get("/pb-chat/reindex")
 def reindex_get():
-    ok, count, msg = fetch_and_index_feed()
-    return {"ok": ok, "count": count, "message": msg}
+    count = fetch_and_index_feed()
+    return {"ok": True, "count": count}
 
 
 @app.post("/pb-chat/reindex")
 def reindex_post():
-    ok, count, msg = fetch_and_index_feed()
-    return {"ok": ok, "count": count, "message": msg}
+    count = fetch_and_index_feed()
+    return {"ok": True, "count": count}
 
 
 @app.get("/pb-chat/debug/fields")
 def debug_fields(limit: int = 5):
     products = load_products()
     rows = []
-    for p in products[: max(0, limit)]:
-        rows.append(
-            {
-                "code": p.get("code"),
-                "brand": p.get("brand"),
-                "name": p.get("name"),
-                "colors": p.get("colors"),
-                "category_path": p.get("category_path"),
-                "product_link": p.get("product_link"),
-                "img0": (p.get("images") or [None])[0],
-            }
-        )
+    for p in products[:limit]:
+        rows.append({
+            "id": p.get("id"),
+            "code": p.get("code"),
+            "brand": p.get("brand"),
+            "name": p.get("name"),
+            "colors": p.get("colors"),
+            "category_path": p.get("category_path"),
+            "product_link": p.get("product_link"),
+        })
     return {"count": len(products), "rows": rows}
 
 
 @app.get("/pb-chat/debug/search")
 def debug_search(q: str, k: int = 10):
     products = load_products()
-    hits, meta = simple_search(products, q, k=k)
-    # hafifletilmiş çıktı
-    lite = []
-    for p in hits:
-        lite.append(
-            {
-                "code": p.get("code"),
-                "brand": p.get("brand"),
-                "name": p.get("name"),
-                "colors": p.get("colors"),
-                "product_link": p.get("product_link"),
-            }
-        )
-    return {"query": q, "meta": meta, "hits": lite}
-
-
-def no_match_message() -> str:
-    # Kullanıcının istediği metin + HTML link
-    return (
-        'Bu aramada eşleşen ürün bulamadım. '
-        'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
-        'İade/kargo gibi konular için '
-        '<a href="https://www.pembecida.com/sikca-sorulan-sorular" target="_self">Sıkça Sorulan Sorular</a> '
-        'sayfamızı inceleyebilirsiniz.'
-    )
-
-
-def llm_answer(user_query: str, typo_meta: Dict[str, Any]) -> str:
-    # LLM yoksa sabit, kısa ve güvenli bir metin dön
-    typo_note = ""
-    if typo_meta.get("typo"):
-        # emin olmadığımızda gereksiz yönlendirme yapmayalım; sadece “bunu mu demek istediniz?” tonu
-        pairs = typo_meta["typo"][:1]
-        typo_note = f' (Bu aramada “{pairs[0][0]}” yazdınız; “{pairs[0][1]}” demek istemiş olabilirsiniz.)'
-
-    if not client:
-        return (
-            "Merhaba! Size yardımcı olayım. Ne arıyorsunuz?"
-            " Örn: “Smiggle kalem kutusu”, “8 yaş hediye”, “Pop Mart blind box”."
-            + typo_note
-        )
-
-    system = (
-        "Sen Pembecida'nın site içi ürün asistanısın. Kullanıcıyla SİZ diye konuş, sıcak ve samimi ol. "
-        "Yanıtlar kısa ve net olsun. Kullanıcıdan arama niyetini netleştirmek için gerekiyorsa 1 soru sor. "
-        "Ürün linkleri verilecek; linklere ek yorum yaparken fiyatların değişebileceğini nazikçe belirt. "
-        "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular ."
-    )
-
-    user = (
-        f"Kullanıcı sorusu: {user_query}\n"
-        f"Not: Typo ihtimali: {typo_meta.get('typo', [])}\n\n"
-        "Cevabın sadece metin olsun; ürün listeleme yapma. "
-        "Kullanıcı ürün arıyorsa tek cümlelik karşılama + arama örneği ver."
-    )
-
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return resp.output_text.strip()
+    hits, meta = search_products(products, q, k=k)
+    # küçük cevap
+    return {
+        "query": q,
+        "meta": meta,
+        "hits": [{
+            "code": h.get("code"),
+            "brand": h.get("brand"),
+            "name": h.get("name"),
+            "colors": h.get("colors"),
+            "link": h.get("product_link"),
+        } for h in hits]
+    }
 
 
 @app.post("/pb-chat/chat")
 def chat(inp: ChatIn):
     products = load_products()
-    hits, meta = simple_search(products, inp.query, k=6)
+
+    if not products:
+        return {
+            "answer": "Şu an ürün listesini yükleyemedim. Lütfen biraz sonra tekrar dener misiniz?",
+            "products": []
+        }
+
+    hits, meta = search_products(products, inp.query, k=6)
 
     if not hits:
-        # typo meta varsa, yine de emin değilsek bulamadım demek istiyorsun → burada kesin bulamadıysa direkt mesaj
-        return {"answer": no_match_message(), "products": [], "meta": meta}
+        return {
+            "answer": (
+                'Bu aramada eşleşen ürün bulamadım. '
+                'İsterseniz marka + ürün tipiyle arayabilirsiniz (örn: “Smiggle kalem kutusu”). '
+                f'İade/kargo gibi konular için <a href="{add_utm("https://www.pembecida.com/sikca-sorulan-sorular")}">Sıkça Sorulan Sorular</a> sayfamızı inceleyebilirsiniz.'
+            ),
+            "products": [],
+            "meta": meta
+        }
 
-    # Widget kartları için sade ürün objeleri
-    cards = []
+    # UI kartları
+    ui_products = []
     for p in hits[:5]:
-        cards.append(
-            {
-                "title": p.get("brand_name") or p.get("name") or "",
-                "link": p.get("product_link") or "",
-                "price": format_price(p),
-                "image": (p.get("images") or [None])[0],
-                "code": p.get("code"),
-                "colors": p.get("colors") or [],
-            }
-        )
+        url = add_utm(p.get("product_link") or "")
+        price = format_price(p)
+        img = (p.get("images") or [""])[0] if (p.get("images") or []) else ""
+        ui_products.append({
+            "title": p.get("brand_name") or p.get("name") or "",
+            "link": url,
+            "price": price,
+            "image": img,
+        })
 
-    answer = llm_answer(inp.query, meta)
-    return {"answer": answer, "products": cards, "meta": meta}
+    # OpenAI yoksa bile UI çalışsın
+    if not client:
+        return {
+            "answer": "Size uygun birkaç öneri hazırladım; aşağıda kartlar halinde görebilirsiniz. İsterseniz yaş ve bütçe aralığını da yazın, seçenekleri daha da daraltayım.",
+            "products": ui_products,
+            "meta": meta
+        }
+
+    # LLM'e sadece bulunan ürünleri veriyoruz (hallucination engeli)
+    safe_products = [{
+        "title": u["title"],
+        "price": u["price"],
+        "link": u["link"],
+    } for u in ui_products]
+
+    system = (
+        "Sen Pembecida'nın site içi ürün asistanısın. Kullanıcıyla SİZ diye konuş, sıcak ve samimi ol. "
+        "Kısa cevap ver. "
+        "İade/kargo vb. sorularda SSS sayfasına yönlendir: https://www.pembecida.com/sikca-sorulan-sorular . "
+        "ÇOK ÖNEMLİ: Sana verilen ürün listesinde olmayan hiçbir ürünü ASLA önerme; isim veya link UYDURMA. "
+        "ÇIKTI KURALI: Sadece 2-3 cümlelik kısa bir karşılama ve yönlendirme yaz. "
+        "Ürünleri metin olarak listeleme; ürünler kart olarak gösterilecek."
+    )
+
+    user_payload = {
+        "query": inp.query,
+        "products": safe_products
+    }
+
+    resp = client.responses.create(
+        model="gpt-4.1-mini",
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
+        ],
+    )
+
+    answer = clean_llm_answer(resp.output_text)
+
+    return {
+        "answer": answer,
+        "products": ui_products,
+        "meta": meta
+    }
 
 
+# -----------------------------
+# Widget JS (served from API)
+# -----------------------------
 @app.get("/pb-chat/widget.js")
 def widget():
     js = r"""
@@ -762,4 +773,3 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript; charset=utf-8")
-
