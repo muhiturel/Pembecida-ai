@@ -385,25 +385,19 @@ def search_products(products: List[Dict[str, Any]], q: str, k: int = 6) -> Tuple
     meta["bag_intent"] = bag_int
 
     tokens = nq.split()
-
-    # BRAND-ONLY özel durum: "smiggle" gibi -> o brand’ın en yeni ürünleri
-    if len(tokens) == 1 and tokens[0] in [norm(x) for x in BRAND_KNOWN]:
-        brand_token = tokens[0]
-        # "popmart" -> "pop mart" eşitleme
-        if brand_token == "popmart":
-            brand_token = "pop mart"
-
-        hits = []
-        for p in products:
-            b = norm(p.get("brand", ""))
-            if brand_token in b:
-                hits.append(p)
-            if len(hits) >= k:
-                break
-        return hits, meta
-
+    
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for p in products:
+        # Query içinde marka geçiyorsa, diğer markaları ele (çok daha stabil)
+        q_has_smiggle = ("smiggle" in nq)
+        q_has_popmart = ("pop mart" in nq) or ("popmart" in nq)
+
+        b = norm(p.get("brand", ""))
+        if q_has_smiggle and ("smiggle" not in b):
+            continue
+        if q_has_popmart and (("pop mart" not in b) and ("popmart" not in b)):
+            continue
+        
         # Hard filter: renk varsa renge uymayanı ele
         if color_terms and not matches_color(p, color_terms):
             continue
@@ -773,3 +767,4 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript; charset=utf-8")
+
