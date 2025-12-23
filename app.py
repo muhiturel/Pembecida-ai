@@ -355,50 +355,94 @@ def correct_tokens(tokens: List[str], vocab: List[str]) -> Tuple[List[str], List
             corrected.append(t)
     return corrected, changes
 
-
 def simple_search(products: List[Dict[str, Any]], q: str, k: int = 8) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     nq = norm(q)
     if not nq:
-        return [], {"used_query": "", "typo": []}
+        return [], {"used_query": "", "typo": [], "strict": False}
 
     tokens = nq.split()
     vocab = build_vocab(products)
     tokens2, typo_changes = correct_tokens(tokens, vocab)
 
-    # intent terimleri
+    # Query intent + renk tespiti
     intent_terms = []
+    has_bag_intent = False
+    has_stationery_intent = False
+
+    # "çanta" niyeti: çanta/cantasi/backpack/trolley/beslenme vb.
+    bag_keywords = ["çanta", "canta", "cantası", "cantasi", "backpack", "trolley", "beslenme", "okul"]
+    if any(t in nq for t in [norm(x) for x in bag_keywords]):
+        has_bag_intent = True
+
+    # kırtasiye niyeti (isteğe bağlı)
+    stationery_keywords = ["kalem", "kalem kutusu", "kalemkutusu", "defter", "kırtasiye", "kirtasiye"]
+    if any(norm(x) in nq for x in stationery_keywords):
+        has_stationery_intent = True
+
     for terms in INTENT_MAP.values():
         if any(norm(t) in nq for t in terms):
             intent_terms += [norm(t) for t in terms]
 
-    # color terms
+    # renk: query’de renk varsa HARD FILTER uygulayacağız
     color_terms = []
     for _, terms in COLOR_HINTS.items():
         if any(norm(t) in nq for t in terms):
             color_terms += [norm(t) for t in terms]
+    has_color = len(color_terms) > 0
 
+    def matches_color(p: Dict[str, Any]) -> bool:
+        if not has_color:
+            return True
+        p_colors = norm(" ".join(p.get("colors", []) or []))  # type1 renkler
+        p_name = norm(p.get("name", "") + " " + p.get("brand_name", ""))
+        # renk ürün renklerinde veya adında geçmeli
+        return any(ct in p_colors or ct in p_name for ct in color_terms)
+
+    def matches_kind(p: Dict[str, Any]) -> bool:
+        # Kullanıcı “çanta” arıyorsa çanta olmayanı ele
+        if has_bag_intent:
+            hay = norm(" ".join([
+                p.get("name", ""),
+                p.get("brand_name", ""),
+                p.get("category_path", ""),
+                p.get("model", ""),
+                p.get("product_link", ""),
+            ]))
+            return ("çanta" in hay) or ("canta" in hay) or ("backpack" in hay) or ("trolley" in hay) or ("beslenme" in hay) or ("okul" in hay)
+
+        # Kullanıcı kırtasiye arıyorsa çanta vb. alakasızı elemek istersen:
+        if has_stationery_intent:
+            hay = norm(" ".join([
+                p.get("name", ""),
+                p.get("brand_name", ""),
+                p.get("category_path", ""),
+            ]))
+            return ("kalem" in hay) or ("kırtasiye" in hay) or ("kirtasiye" in hay)
+
+        return True
+
+    # 1) STRICT PASS: renk varsa renge uymayanı + “çanta” varsa çanta olmayanı ELE
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for p in products:
-        hay = p.get("search_text", "")
+        if not matches_color(p):
+            continue
+        if not matches_kind(p):
+            continue
 
+        hay = p.get("search_text", "")
         score = 0
+
         # token match
         score += sum(2 for t in tokens2 if t and t in hay)
-
         # intent boost
         score += sum(3 for t in intent_terms if t and t in hay)
-
-        # color boost: renk hem hay içinde hem colors içinde ise daha güçlü
+        # color boost (strict zaten filtreledi ama boost dursun)
         p_colors = norm(" ".join(p.get("colors", []) or []))
         score += sum(4 for t in color_terms if t and (t in p_colors or t in hay))
 
-        # brand boost (Smiggle / Pop Mart vb.)
+        # brand boost
         b = norm(p.get("brand", ""))
         score += 2 if b and b in nq else 0
-
-        # ürün kodu / ws_code / barcode araması (kullanıcı bazen kod yazar)
-        if any(x in nq for x in [norm(str(p.get("code") or "")), norm(str(p.get("product_link") or ""))]):
-            score += 1
 
         if score > 0:
             scored.append((score, p))
@@ -408,8 +452,18 @@ def simple_search(products: List[Dict[str, Any]], q: str, k: int = 8) -> Tuple[L
 
     meta = {
         "used_query": " ".join(tokens2),
-        "typo": typo_changes,  # [('cyrbaby','crybaby')] gibi
+        "typo": typo_changes,
+        "strict": True,
+        "has_color": has_color,
+        "has_bag_intent": has_bag_intent,
+        "color_terms": color_terms,
     }
+
+    # 2) Eğer kullanıcı renk yazdı ama hiç sonuç yoksa:
+    #    Yanlış ürün göstermeyelim → boş dönelim (UI “bulamadım” gösterecek)
+    if has_color and len(hits) == 0:
+        return [], meta
+
     return hits, meta
 
 
@@ -708,3 +762,4 @@ def widget():
 })();
 """.strip()
     return Response(js, media_type="application/javascript; charset=utf-8")
+
