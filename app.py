@@ -42,6 +42,38 @@ class ChatIn(BaseModel):
 # =========================
 # Helpers
 # =========================
+def is_irrelevant_query(q: str) -> bool:
+    """
+    Ürün araması olmayan sorguları yakalamak için basit bir gate.
+    Amaç: alakasızsa arama/LLM çalıştırmadan net yönlendirmek.
+    """
+    nq = norm(q)
+    if not nq:
+        return True
+
+    # Çok kısa tek kelime ve ürün/marka sinyali yoksa
+    product_signals = [
+        "smiggle", "pop", "mart", "labubu", "crybaby", "skullpanda", "dimoo",
+        "çanta", "canta", "kalem", "kalem kutusu", "kalemkutusu", "beslenme",
+        "suluk", "termos", "oyuncak", "figur", "figür", "blind box", "sürpriz", "surpriz"
+    ]
+    if len(nq) <= 3 and not any(s in nq for s in product_signals):
+        return True
+
+    # Genel alakasız “konu” kelimeleri
+    off_topic = [
+        "galatasaray", "fenerbahçe", "beşiktaş", "trabzon",
+        "hava durumu", "deprem", "seçim", "politika",
+        "dolar", "euro", "borsa", "bitcoin",
+        "kimdir", "nedir", "nasıl yapılır", "tarif", "reçete", "film", "dizi"
+    ]
+    if any(t in nq for t in off_topic):
+        # Ama ürün sinyali varsa engelleme (örn "galatasaray çantası" ürün olabilir)
+        if not any(s in nq for s in product_signals):
+            return True
+
+    return False
+
 def norm(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
@@ -526,6 +558,22 @@ def chat(inp: ChatIn):
     products = load_products()
     hits, meta = search_products(products, inp.query, k=6)
 
+    # ✅ Alakasız sorgu kalibrasyonu: hiç arama/LLM çalıştırma
+    if is_irrelevant_query(inp.query):
+        return {
+            "answer": (
+                "Ben Pembecida’da ürün bulmanıza yardımcı olan bir alışveriş asistanıyım 😊<br/>"
+                "Ne aradığınızı ürün tipi/marka ile yazarsanız hemen önerebilirim.<br/><br/>"
+                "Örnekler:<br/>"
+                "• “Smiggle termos”<br/>"
+                "• “pembe çanta”<br/>"
+                "• “8 yaş hediye Pop Mart”<br/>"
+                "• “kalem kutusu”"
+            ),
+            "products": [],
+            "meta": {"calibration": "irrelevant_query"}
+        }
+    
     # no hits => net ve uydurmayan yanıt
     if not hits:
         sss_url = "https://www.pembecida.com/sikca-sorulan-sorular"
@@ -725,3 +773,4 @@ def widget_js():
 """.strip()
 
     return Response(js, media_type="application/javascript; charset=utf-8")
+
